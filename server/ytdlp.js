@@ -271,6 +271,9 @@ function commonArgs() {
   // Network robustness for slow / flaky connections: short socket timeout
   // with many retries, resume .part files, chunked HTTP (avoids throttled
   // single long requests) and parallel DASH fragments.
+  // Hosted mode: route yt-dlp through a (residential) proxy, e.g. to get past
+  // YouTube's datacenter bot check: LAS_PROXY=http://user:pass@host:port or socks5://...
+  if (process.env.LAS_PROXY) args.push('--proxy', process.env.LAS_PROXY);
   args.push('--socket-timeout', '30', '--retries', '20', '--fragment-retries', '20', '--file-access-retries', '10',
     '--extractor-retries', '3', '--retry-sleep', 'http:exp=1:20', '--retry-sleep', 'fragment:exp=1:20', '--retry-sleep', 'extractor:exp=1:10',
     '--continue', '--http-chunk-size', '5M', '--concurrent-fragments', '4', '--sleep-requests', '0.5');
@@ -309,17 +312,25 @@ function serverCookies() {
 }
 
 /** Abuse caps for hosted mode (also honoured locally when set). */
-function capArgs() {
+function maxDurationFor(kind) {
+  const v = parseInt(process.env.LAS_MAX_DURATION_SEC || '0', 10);
+  if (kind !== 'audio' || v <= 0) return v;
+  // Audio is ~30x smaller than video: allow long talks / sermons / lives as MP3.
+  return parseInt(process.env.LAS_MAX_AUDIO_DURATION_SEC || String(Math.max(v, 4 * 3600)), 10);
+}
+
+function capArgs(kind = 'video') {
+  if (kind === 'info') return [];
   const a = [];
-  const maxDur = parseInt(process.env.LAS_MAX_DURATION_SEC || '0', 10);
+  const maxDur = maxDurationFor(kind);
   if (maxDur > 0) a.push('--match-filter', `duration <=? ${maxDur}`);
   if (process.env.LAS_MAX_FILESIZE) a.push('--max-filesize', process.env.LAS_MAX_FILESIZE);
   return a;
 }
 
-async function runWithFallbacks(args, timeoutMs, onLine, signal) {
+async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video') {
   const st = getSettings().cookies;
-  const base = [...commonArgs(), ...capArgs()];
+  const base = [...commonArgs(), ...capArgs(kind)];
   const srv = serverCookies();
   const userCookies = srv ? ['--cookies', srv]
     : st.mode === 'file' && fs.existsSync(cookiesFile()) ? ['--cookies', cookiesFile()]
@@ -338,7 +349,7 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal) {
     log(`attempt: ${att.name}`);
     const r = await runYtDlp([...base, ...att.extra, ...args], timeoutMs, onLine, signal);
     if (r.code === 0 && /does not pass filter/i.test(r.out + r.err)) {
-      throw new YtDlpError(`This video is longer than the server limit (${Math.round(parseInt(process.env.LAS_MAX_DURATION_SEC, 10) / 60)} min).`, 'too_long');
+      throw new YtDlpError(`This ${kind === 'audio' ? 'audio' : 'video'} is longer than the server limit (${Math.round(maxDurationFor(kind) / 60)} min).${kind !== 'audio' ? ' Try "Audio only (MP3)".' : ''}`, 'too_long');
     }
     if (r.code === 0 && /File is larger than max-filesize|Aborting/i.test(r.out + r.err) && !r.out.trim().split(/\r?\n/).some((l) => l && !l.startsWith('LASPROG') && !l.startsWith('LASFMT') && !l.startsWith('['))) {
       throw new YtDlpError(`This file is larger than the server limit (${process.env.LAS_MAX_FILESIZE}).`, 'too_large');
@@ -364,7 +375,7 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal) {
 
 async function runYtDlp(args, timeoutMs = 60000, onLine, signal) {
   const { cmd, prefixArgs } = await resolveYtDlp();
-  log(`run ${cmd} ${[...prefixArgs, ...args].join(' ')}`);
+  log(`run ${cmd} ${[...prefixArgs, ...args].map((a, i, all) => (all[i - 1] === '--proxy' ? String(a).replace(/\/\/[^@/]*@/, '//***@') : a)).join(' ')}`);
   const r = await run(cmd, [...prefixArgs, ...args], timeoutMs, onLine, signal).catch((e) => { log(`spawn error: ${e.message}`); throw e; });
   log(`exit ${r.code}${r.code ? ` stderr: ${r.err.trim().slice(-1500)}` : ''}`);
   return r;
@@ -402,14 +413,16 @@ async function resolveShareUrl(url) {
 
 async function getInfo(url) {
   url = await resolveShareUrl(url);
-  const { out } = await runWithFallbacks(['--no-playlist', '-J', '--', url], 120000);
+  const { out } = await runWithFallbacks(['--no-playlist', '-J', '--', url], 120000, undefined, undefined, 'info');
   let j;
   try { j = JSON.parse(out); } catch (e) { throw new Error('yt-dlp returned invalid metadata'); }
   const duration = Number(j.duration) || 0;
-  const maxDur = parseInt(process.env.LAS_MAX_DURATION_SEC || '0', 10);
-  if (maxDur > 0 && duration > maxDur) {
-    throw new YtDlpError(`This video is ${Math.round(duration / 60)} min long; the server limit is ${Math.round(maxDur / 60)} min.`, 'too_long');
+  const maxDur = maxDurationFor('video');
+  const maxAudio = maxDurationFor('audio');
+  if (maxAudio > 0 && duration > maxAudio) {
+    throw new YtDlpError(`This video is ${Math.round(duration / 60)} min long; the server limit is ${Math.round(maxAudio / 60)} min.`, 'too_long');
   }
+  const videoTooLong = maxDur > 0 && duration > maxDur;
   const fmts = Array.isArray(j.formats) ? j.formats : [];
   const size = (f) => f && (f.filesize || f.filesize_approx || (f.tbr && duration ? (f.tbr * 1000 / 8) * duration : 0)) || 0;
   const audios = fmts.filter((f) => f.vcodec === 'none' && f.acodec && f.acodec !== 'none');
@@ -438,8 +451,10 @@ async function getInfo(url) {
     }
   }
   if (!options.length) options.push({ tag: 'best', kind: 'video', label: 'Best available (MP4)', kbps: 0, bytes: 0 });
+  if (videoTooLong) options.length = 0; // only audio fits the server limits
   options.push({ tag: 'mp3', kind: 'audio', label: 'Audio only (MP3 192 kbps)', kbps: 192, bytes: Math.round(duration * 192000 / 8) });
   return {
+    note: videoTooLong ? `This video is ${Math.round(duration / 60)} min long; the server allows video up to ${Math.round(maxDur / 60)} min, so only MP3 audio is offered.` : '',
     id: j.id, title: j.title || j.id, uploader: j.uploader || j.channel || j.uploader_id || '', duration,
     extractor: j.extractor_key || j.extractor || '',
     thumbnail: j.thumbnail || '', webpageUrl: j.webpage_url || url, options,
@@ -515,7 +530,7 @@ async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192
   for (;;) {
     attempt++;
     try {
-      res = await runWithFallbacks(args, timeoutMs, onLine, signal);
+      res = await runWithFallbacks(args, timeoutMs, onLine, signal, kind);
     } catch (e) {
       if (e && e.code === 'cancelled') { fs.rm(dir, { recursive: true, force: true }, () => {}); throw e; }
       if (attempt < maxAttempts && (e.code === 'timeout' || isNetworkError(e.message))) {
@@ -535,7 +550,7 @@ async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192
   const file = out.trim().split(/\r?\n/).filter((l) => l && !l.startsWith('LASPROG') && !l.startsWith('LASFMT') && !l.startsWith('[')).pop();
   if (code !== 0 || !file || !fs.existsSync(file)) {
     fs.rm(dir, { recursive: true, force: true }, () => {});
-    if (code === 0 && capArgs().length) {
+    if (code === 0 && capArgs(kind).length) {
       throw new YtDlpError(`Skipped: the video is over the server limit (max ${Math.round(parseInt(process.env.LAS_MAX_DURATION_SEC || '0', 10) / 60) || '∞'} min${process.env.LAS_MAX_FILESIZE ? `, ${process.env.LAS_MAX_FILESIZE}` : ''}).`, 'over_limit');
     }
     throw new Error(lastErrorLine(res.err, code));

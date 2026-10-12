@@ -32,3 +32,9 @@ docker run -p 8080:8080 -e LAS_API_TOKEN=change-me las-server
 ```
 
 Only download content you have the rights to. MIT licensed.
+
+## Optional: cookies and proxy (YouTube bot checks)
+
+- `SERVER_COOKIES`: set this as a **secret** env var. Its value is the full contents of a Netscape-format `cookies.txt` (use a throwaway account; the cookies can get it flagged). You can use `LAS_SERVER_COOKIES_FILE=/etc/secrets/cookies.txt` with a Render secret file instead.
+- `LAS_PROXY`: the proxy URL yt-dlp should use, for example `http://user:pass@host:port`. The run log redacts the credentials.
+- `LAS_MAX_AUDIO_DURATION_SEC`: the longest video that can still be downloaded as MP3 (default: the video cap or 4 h, whichever is larger). Longer videos are offered as MP3 only.
