@@ -7,7 +7,10 @@ ffmpeg) and streams the file back to the app. It contains no app UI.
 ## Endpoints
 - `GET /api/health`
 - `GET /api/media-info?url=…`
-- `GET /api/media-download?url=…&format=mp4|mp3&quality=…`
+- `POST /api/jobs?url=…&format=mp4|mp3&quality=…` → `{id}` (starts a server-side download)
+- `GET /api/jobs/:id` → state, percent, speed, ETA
+- `GET /api/jobs/:id/file` (supports `Range`, so transfers resume) · `DELETE /api/jobs/:id` (cancel)
+- `GET /api/media-download?url=…&format=mp4|mp3&quality=…` (legacy single request)
 
 Requests need the `X-LAS-Token` header (or `?token=`), matching `LAS_API_TOKEN`.
 
