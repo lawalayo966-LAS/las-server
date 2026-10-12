@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Production deps only (bundled ffmpeg/ffprobe from @ffmpeg-installer; no Electron).
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
-   
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 COPY server ./server
 COPY build-scripts/fetch-ytdlp.js ./build-scripts/fetch-ytdlp.js
