@@ -152,12 +152,21 @@ function resolveYtDlp() {
   return resolving;
 }
 
-function run(cmd, args, timeoutMs, onLine) {
+function run(cmd, args, timeoutMs, onLine, signal) {
   return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new YtDlpError('Download cancelled.', 'cancelled'));
     let child;
     try { child = spawn(cmd, args, { windowsHide: true }); } catch (e) { return reject(e); }
     let out = ''; let err = '';
-    const timer = setTimeout(() => { try { child.kill(); } catch (_) {} reject(new Error('yt-dlp timed out')); }, timeoutMs);
+    const timer = setTimeout(() => { try { child.kill(); } catch (_) {} reject(new YtDlpError('yt-dlp timed out', 'timeout')); }, timeoutMs);
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        try { child.kill(IS_WIN ? undefined : 'SIGINT'); } catch (_) {}
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 3000).unref();
+        reject(new YtDlpError('Download cancelled.', 'cancelled'));
+      }, { once: true });
+    }
     let partial = '';
     child.stdout.on('data', (d) => {
       out += d; if (out.length > 32e6) out = out.slice(-32e6);
@@ -259,8 +268,12 @@ function commonArgs() {
   const args = [];
   const deno = denoPath();
   if (deno) args.push('--js-runtimes', `deno:${deno}`);
-  args.push('--retries', '5', '--extractor-retries', '3', '--retry-sleep', 'http:exp=1:20', '--retry-sleep', 'extractor:exp=1:10',
-    '--sleep-requests', '0.5');
+  // Network robustness for slow / flaky connections: short socket timeout
+  // with many retries, resume .part files, chunked HTTP (avoids throttled
+  // single long requests) and parallel DASH fragments.
+  args.push('--socket-timeout', '30', '--retries', '20', '--fragment-retries', '20', '--file-access-retries', '10',
+    '--extractor-retries', '3', '--retry-sleep', 'http:exp=1:20', '--retry-sleep', 'fragment:exp=1:20', '--retry-sleep', 'extractor:exp=1:10',
+    '--continue', '--http-chunk-size', '5M', '--concurrent-fragments', '4', '--sleep-requests', '0.5');
   return args;
 }
 
@@ -304,7 +317,7 @@ function capArgs() {
   return a;
 }
 
-async function runWithFallbacks(args, timeoutMs, onLine) {
+async function runWithFallbacks(args, timeoutMs, onLine, signal) {
   const st = getSettings().cookies;
   const base = [...commonArgs(), ...capArgs()];
   const srv = serverCookies();
@@ -323,11 +336,11 @@ async function runWithFallbacks(args, timeoutMs, onLine) {
   for (const att of attempts) {
     if (att.update) { try { const { cmd } = await resolveYtDlp(); await ensureLatest(cmd, true); } catch (_) {} }
     log(`attempt: ${att.name}`);
-    const r = await runYtDlp([...base, ...att.extra, ...args], timeoutMs, onLine);
+    const r = await runYtDlp([...base, ...att.extra, ...args], timeoutMs, onLine, signal);
     if (r.code === 0 && /does not pass filter/i.test(r.out + r.err)) {
       throw new YtDlpError(`This video is longer than the server limit (${Math.round(parseInt(process.env.LAS_MAX_DURATION_SEC, 10) / 60)} min).`, 'too_long');
     }
-    if (r.code === 0 && /File is larger than max-filesize|Aborting/i.test(r.out + r.err) && !r.out.trim().split(/\r?\n/).some((l) => l && !l.startsWith('LASPROG') && !l.startsWith('['))) {
+    if (r.code === 0 && /File is larger than max-filesize|Aborting/i.test(r.out + r.err) && !r.out.trim().split(/\r?\n/).some((l) => l && !l.startsWith('LASPROG') && !l.startsWith('LASFMT') && !l.startsWith('['))) {
       throw new YtDlpError(`This file is larger than the server limit (${process.env.LAS_MAX_FILESIZE}).`, 'too_large');
     }
     if (r.code === 0) { if (failures.length) log(`succeeded with: ${att.name}`); return r; }
@@ -349,10 +362,10 @@ async function runWithFallbacks(args, timeoutMs, onLine) {
   throw new YtDlpError(reason, /Unsupported URL/i.test(reason) ? 'unsupported' : 'ytdlp_failed');
 }
 
-async function runYtDlp(args, timeoutMs = 60000, onLine) {
+async function runYtDlp(args, timeoutMs = 60000, onLine, signal) {
   const { cmd, prefixArgs } = await resolveYtDlp();
   log(`run ${cmd} ${[...prefixArgs, ...args].join(' ')}`);
-  const r = await run(cmd, [...prefixArgs, ...args], timeoutMs, onLine).catch((e) => { log(`spawn error: ${e.message}`); throw e; });
+  const r = await run(cmd, [...prefixArgs, ...args], timeoutMs, onLine, signal).catch((e) => { log(`spawn error: ${e.message}`); throw e; });
   log(`exit ${r.code}${r.code ? ` stderr: ${r.err.trim().slice(-1500)}` : ''}`);
   return r;
 }
@@ -442,53 +455,92 @@ function lastErrorLine(err, code) {
  * Download `url` into a fresh temp dir. kind: 'video' (mp4) | 'audio' (mp3).
  * Resolves { file, dir, title, ext }. Caller must remove `dir`.
  */
-async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192, formatId = '', timeoutMs = 30 * 60000, onProgress } = {}) {
+/** Network-level failures worth an automatic resume (not site/format errors). */
+function isNetworkError(text) {
+  return /timed out|Read timed out|Giving up after|Connection (?:reset|aborted|refused)|RemoteDisconnected|IncompleteRead|urlopen error|Temporary failure|Network is unreachable|EOF occurred|ECONNRESET|did not get any data|HTTP Error 5\d\d|got only \d+ bytes/i.test(String(text || ''));
+}
+
+/** Stable per-URL+format work dir so a retry resumes the .part files. */
+function workDir(url, kind, q, formatId) {
+  const key = crypto.createHash('sha1').update(`${url}|${kind}|${q}|${formatId || ''}`).digest('hex').slice(0, 16);
+  const dir = path.join(os.tmpdir(), `las-ytdl-${key}`);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** yt-dlp format selection. Exported for tests. */
+function formatArgs(kind, q, bitrate, formatId) {
+  if (kind === 'audio') {
+    // Audio-only stream when the site has one (never pull the full video for
+    // an MP3); otherwise the smallest format that contains audio.
+    return ['-f', 'ba/wa*/w', '-x', '--audio-format', 'mp3', '--audio-quality', `${bitrate}K`];
+  }
+  if (formatId) return ['-f', `${formatId}+ba/${formatId}/b`, '--merge-output-format', 'mp4', '--remux-video', 'mp4'];
+  // Sort instead of filtering on height: formats without a height (Facebook
+  // "sd"/"hd", many other sites) then fall back to the SMALLEST file, not the
+  // biggest. Prefer the requested height (or the closest below), then H.264/AAC.
+  // If no format has a known height (e.g. Facebook "sd"/"hd"), a low quality
+  // request takes the worst (smallest) file and a high one the best.
+  const fallback = q <= 480 ? 'w' : 'b';
+  return ['-f', `bv*[height<=${q}]+ba/b[height<=${q}]/${fallback}`, '-S', `res:${q},vcodec:h264,acodec:aac,+size,+br`, '--merge-output-format', 'mp4', '--remux-video', 'mp4'];
+}
+
+async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192, formatId = '', timeoutMs = 3 * 3600e3, onProgress, onStatus, signal, maxAttempts = 3 } = {}) {
   url = await resolveShareUrl(url);
   if (formatId && !/^[\w.-]{1,40}$/.test(formatId)) throw new YtDlpError('Invalid format id', 'bad_request');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'las-ytdl-'));
   const q = Number.isInteger(quality) && quality > 0 && quality <= 4320 ? quality : 720;
-  const args = ['--no-playlist', '--newline', '--progress', '--progress-template', 'download:LASPROG %(progress._percent_str)s', '--restrict-filenames',
-    '--ffmpeg-location', FFMPEG_PATH, '-P', dir, '-o', '%(title).80B.%(ext)s', '--print', 'after_move:filepath'];
-  if (kind === 'audio') {
-    args.push('-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', `${bitrate}K`);
-  } else {
-    if (formatId) {
-      args.push('-f', `${formatId}+ba/${formatId}/b`, '--merge-output-format', 'mp4', '--remux-video', 'mp4');
-    } else
-    // Prefer H.264 (plays everywhere), then any mp4, then anything.
-    args.push('-f', `bv*[height<=${q}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=${q}][ext=mp4]+ba[ext=m4a]/b[height<=${q}][ext=mp4]/bv*[height<=${q}]+ba/b[height<=${q}]/b`,
-      '--merge-output-format', 'mp4', '--remux-video', 'mp4');
-  }
-  args.push('--', url);
+  const dir = workDir(url, kind, q, formatId);
+  const args = ['--no-playlist', '--newline', '--progress', '--progress-template',
+    'download:LASPROG %(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s',
+    '--restrict-filenames', '--ffmpeg-location', FFMPEG_PATH, '-P', dir, '-o', '%(title).80B.%(ext)s', '--print', 'before_dl:LASFMT %(format_id)s', '--print', 'after_move:filepath',
+    ...formatArgs(kind, q, bitrate, formatId), '--', url];
   // Video+audio are two downloads; map them onto 0-90%, merge/convert = 90-99%.
-  let part = 0; let lastPct = -1;
-  let res;
-  try {
-    res = await runWithFallbacks(args, timeoutMs, (line) => {
+  let part = 0; let lastPct = -1; let parts = kind === 'audio' ? 1 : 2;
+  const onLine = (line) => {
     if (!onProgress) return;
-    const m = /^LASPROG\s+([\d.]+)%/.exec(line.trim());
+    const fm = /^LASFMT\s+(\S+)/.exec(line.trim());
+    if (fm) { parts = fm[1].includes('+') ? 2 : 1; return; }
+    const m = /^LASPROG\s+([\d.]+)%\|([^|]*)\|([^|]*)\|([^|]*)\|(.*)$/.exec(line.trim());
     if (m) {
       const pct = parseFloat(m[1]);
       if (pct < lastPct - 50) part++;
       lastPct = pct;
-      const parts = kind === 'audio' ? 1 : 2;
-      onProgress(Math.min(90, Math.round(((Math.min(part, parts - 1) + pct / 100) / parts) * 90)));
-    } else if (/^\[(Merger|ExtractAudio|VideoRemuxer)\]/.test(line)) onProgress(95);
-    });
-  } catch (e) {
-    fs.rm(dir, { recursive: true, force: true }, () => {});
-    throw e;
+      const clean = (v) => { v = String(v || '').trim(); return /^(NA|None|Unknown)/i.test(v) ? '' : v; };
+      onProgress(Math.min(90, Math.round(((Math.min(part, parts - 1) + pct / 100) / parts) * 90)), {
+        speed: clean(m[2]), eta: clean(m[3]), downloaded: parseInt(m[4], 10) || 0, total: parseInt(m[5], 10) || 0,
+      });
+    } else if (/^\[(Merger|ExtractAudio|VideoRemuxer)\]/.test(line)) onProgress(95, { stage: 'Converting…' });
+  };
+  let res; let attempt = 0;
+  for (;;) {
+    attempt++;
+    try {
+      res = await runWithFallbacks(args, timeoutMs, onLine, signal);
+    } catch (e) {
+      if (e && e.code === 'cancelled') { fs.rm(dir, { recursive: true, force: true }, () => {}); throw e; }
+      if (attempt < maxAttempts && (e.code === 'timeout' || isNetworkError(e.message))) {
+        log(`network error, retry ${attempt}/${maxAttempts - 1} (resuming): ${e.message}`);
+        if (onStatus) onStatus(`Connection slow, retrying… (resuming, attempt ${attempt + 1}/${maxAttempts})`);
+        part = 0; lastPct = -1;
+        await new Promise((r) => setTimeout(r, 3000 * attempt));
+        continue;
+      }
+      if (e.code !== 'timeout' && !isNetworkError(e.message)) fs.rm(dir, { recursive: true, force: true }, () => {});
+      if (isNetworkError(e.message)) throw new YtDlpError(`The connection kept timing out (${e.message}). Tap Download again to resume where it stopped.`, 'network');
+      throw e;
+    }
+    break;
   }
-  const { code, out, err } = res;
-  const file = out.trim().split(/\r?\n/).filter((l) => l && !l.startsWith('LASPROG') && !l.startsWith('[')).pop();
+  const { code, out } = res;
+  const file = out.trim().split(/\r?\n/).filter((l) => l && !l.startsWith('LASPROG') && !l.startsWith('LASFMT') && !l.startsWith('[')).pop();
   if (code !== 0 || !file || !fs.existsSync(file)) {
     fs.rm(dir, { recursive: true, force: true }, () => {});
     if (code === 0 && capArgs().length) {
       throw new YtDlpError(`Skipped: the video is over the server limit (max ${Math.round(parseInt(process.env.LAS_MAX_DURATION_SEC || '0', 10) / 60) || '∞'} min${process.env.LAS_MAX_FILESIZE ? `, ${process.env.LAS_MAX_FILESIZE}` : ''}).`, 'over_limit');
     }
-    throw new Error(lastErrorLine(err, code));
+    throw new Error(lastErrorLine(res.err, code));
   }
   return { file, dir, ext: path.extname(file).slice(1), title: path.basename(file, path.extname(file)) };
 }
 
-module.exports = { resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };
+module.exports = { formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };

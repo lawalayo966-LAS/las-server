@@ -81,11 +81,23 @@ let active = 0;
 async function handle(req, res) {
   const urlObj = new URL(req.url, 'http://x');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'X-LAS-Token, Content-Type');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length');
+  res.setHeader('Access-Control-Allow-Headers', 'X-LAS-Token, Content-Type, Range');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, Content-Range, Accept-Ranges');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-  if (urlObj.pathname === '/api/health' || urlObj.pathname === '/') return send(res, 200, { ok: true, service: 'las-public-server' });
-  if (req.method !== 'GET' || !['/api/media-info', '/api/media-download'].includes(urlObj.pathname)) return send(res, 404, { error: 'Not found' });
+  if (urlObj.pathname === '/api/health' || urlObj.pathname === '/') return send(res, 200, { ok: true, service: 'las-public-server', jobs: true });
+
+  // Job API: polling for status and Range requests for the file keep every
+  // HTTP request short, so slow mobile links and proxy timeouts don't kill a
+  // long download, and an interrupted transfer resumes where it stopped.
+  const jm = /^\/api\/jobs\/([a-f0-9]{24})(\/file)?$/.exec(urlObj.pathname);
+  if (jm || urlObj.pathname === '/api/jobs') {
+    if (!tokenOk(req, urlObj)) return send(res, 401, { success: false, error: 'Invalid or missing app token.' });
+    if (jm) return jobRoute(req, res, jm[1], !!jm[2]);
+  }
+
+  if (!(req.method === 'GET' && ['/api/media-info', '/api/media-download'].includes(urlObj.pathname))
+    && !(req.method === 'POST' && urlObj.pathname === '/api/jobs')) return send(res, 404, { error: 'Not found' });
   if (!tokenOk(req, urlObj)) return send(res, 401, { success: false, error: 'Invalid or missing app token.' });
 
   const ip = clientIp(req);
@@ -103,6 +115,7 @@ async function handle(req, res) {
 
   const format = (urlObj.searchParams.get('format') || 'mp4').toLowerCase();
   if (!['mp4', 'mp3'].includes(format)) return send(res, 400, { success: false, error: 'format must be mp4 or mp3' });
+  if (urlObj.pathname === '/api/jobs') return startJob(res, ip, target, format, urlObj);
   if (active >= MAX_CONC) return send(res, 503, { success: false, code: 'busy', error: 'Server is busy, try again in a minute.' }, { 'Retry-After': '60' });
   active++;
   req.setTimeout(0); res.setTimeout(0);
@@ -133,6 +146,84 @@ async function handle(req, res) {
   res.on('close', () => { st.destroy(); cleanup(); });
 }
 
+// ------------------------------------------------------------------ jobs
+const jobs = new Map();
+const JOB_KEEP_MS = parseInt(process.env.LAS_JOB_KEEP_MIN || '45', 10) * 60e3;
+
+function jobView(j) {
+  return { success: true, id: j.id, state: j.state, percent: j.percent, speed: j.speed, eta: j.eta, status: j.status,
+    downloaded: j.downloaded, total: j.total, size: j.size, name: j.name, code: j.code, error: j.error };
+}
+
+function startJob(res, ip, target, format, urlObj) {
+  const running = [...jobs.values()].filter((j) => j.state === 'running').length;
+  if (running >= MAX_CONC) return send(res, 503, { success: false, code: 'busy', error: 'Server is busy, try again in a minute.' }, { 'Retry-After': '60' });
+  const id = crypto.randomBytes(12).toString('hex');
+  const ctrl = new AbortController();
+  const j = { id, state: 'running', percent: 0, speed: '', eta: '', status: 'Downloading on the server…', ctrl, touched: Date.now() };
+  jobs.set(id, j);
+  log(`job ${id} start ip=${ip} format=${format} url=${target}`);
+  ytdlp.downloadMedia(target, {
+    kind: format === 'mp3' ? 'audio' : 'video',
+    quality: Math.min(parseInt(urlObj.searchParams.get('quality') || '720', 10) || 720, 1080),
+    formatId: (urlObj.searchParams.get('formatId') || '').trim(),
+    signal: ctrl.signal,
+    onProgress: (p, info = {}) => { j.percent = p; Object.assign(j, { speed: info.speed || '', eta: info.eta || '', downloaded: info.downloaded, total: info.total }); if (info.stage) j.status = info.stage; },
+    onStatus: (st) => { j.status = st; },
+  }).then((r) => {
+    j.result = r; j.size = fs.statSync(r.file).size; j.name = safeDownloadName(`${r.title}.${r.ext}`, `media.${format}`);
+    j.mime = r.ext === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+    j.state = 'done'; j.percent = 100; j.status = 'Ready'; j.doneAt = Date.now();
+    log(`job ${id} done ${j.size} bytes`);
+  }).catch((e) => {
+    j.state = 'error'; j.code = e.code || 'ytdlp_failed'; j.error = e.message; j.doneAt = Date.now();
+    log(`job ${id} failed: ${e.code} ${e.message}`);
+  });
+  return send(res, 202, jobView(j));
+}
+
+function dropJob(j) {
+  jobs.delete(j.id);
+  try { j.ctrl.abort(); } catch (_) {}
+  if (j.result) fs.rm(j.result.dir, { recursive: true, force: true }, () => {});
+}
+
+function jobRoute(req, res, id, wantFile) {
+  const j = jobs.get(id);
+  if (!j) return send(res, 404, { success: false, code: 'no_job', error: 'Download job expired or not found. Start it again.' });
+  j.touched = Date.now();
+  if (req.method === 'DELETE') { log(`job ${id} cancelled`); dropJob(j); return send(res, 200, { success: true }); }
+  if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
+  if (!wantFile) return send(res, 200, jobView(j));
+  if (j.state !== 'done') return send(res, 409, { success: false, code: 'not_ready', error: 'Not ready yet' });
+  const size = j.size;
+  let start = 0; let end = size - 1; let status = 200;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+  if (m && (m[1] || m[2])) {
+    if (m[1]) { start = parseInt(m[1], 10); if (m[2]) end = Math.min(end, parseInt(m[2], 10)); } else { start = Math.max(0, size - parseInt(m[2], 10)); }
+    if (start > end || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end(); }
+    status = 206;
+  }
+  req.setTimeout(0); res.setTimeout(0);
+  res.writeHead(status, {
+    'Content-Type': j.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes',
+    'Content-Disposition': `attachment; filename="${j.name}"`, 'Cache-Control': 'no-store',
+    ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+  });
+  if (req.method === 'HEAD') return res.end();
+  const st = fs.createReadStream(j.result.file, { start, end });
+  st.pipe(res);
+  res.on('close', () => st.destroy());
+}
+
+function sweepJobs() {
+  const now = Date.now();
+  for (const j of jobs.values()) {
+    if (j.state !== 'running' && now - (j.doneAt || 0) > JOB_KEEP_MS && now - j.touched > 10 * 60e3) dropJob(j);
+    else if (j.state === 'running' && now - j.touched > 15 * 60e3) { log(`job ${j.id} abandoned`); dropJob(j); }
+  }
+}
+
 function start() {
   const server = http.createServer((req, res) => handle(req, res).catch((e) => {
     log(`unexpected: ${e.stack}`);
@@ -141,7 +232,7 @@ function start() {
   return new Promise((resolve) => server.listen(PORT, HOST, () => {
     log(`LAS public server on http://${HOST}:${server.address().port} token=${TOKENS.length ? 'required' : 'DISABLED (set LAS_API_TOKEN!)'} rate=${RATE}/h maxDur=${process.env.LAS_MAX_DURATION_SEC}s maxSize=${process.env.LAS_MAX_FILESIZE} deno=${ytdlp.denoPath()}`);
     sweepTemp(0);
-    const t = setInterval(sweepTemp, 10 * 60e3); t.unref();
+    const t = setInterval(() => { sweepJobs(); sweepTemp(6 * 3600e3); }, 5 * 60e3); t.unref();
     ytdlp.resolveYtDlp().catch((e) => log(`yt-dlp init: ${e.message}`)); // warm up / update
     resolve(server);
   }));
