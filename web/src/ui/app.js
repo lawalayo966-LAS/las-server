@@ -1034,7 +1034,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       let lastAction = null; // retried after the user supplies cookies
       const botHelp = document.getElementById('yt-bot-help');
-      const showBotHelp = (on) => { if (botHelp) botHelp.style.display = on ? 'block' : 'none'; };
+      // Cookie help only makes sense in the desktop app (website / Android can't read browser cookies).
+      const isDesktopApp = !!(window.electronAPI && window.electronAPI.mediaDownload);
+      { const cc = document.getElementById('yt-cookies-card'); if (cc && !isDesktopApp) cc.style.display = 'none'; }
+      const showBotHelp = (on) => { if (botHelp) botHelp.style.display = on && isDesktopApp ? 'block' : 'none'; };
+      // YouTube is PC-app only: the hosted server is blocked by YouTube's bot check.
+      const PC_APP_URL = 'https://github.com/lawalayo966-LAS/las-server/releases/latest/download/LAS-Converter.exe';
+      const isYouTube = (u) => { try { return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i.test(new URL(u).hostname); } catch (_) { return false; } };
       const api = window.electronAPI;
       const retryLast = () => { showBotHelp(false); if (lastAction) lastAction(); };
       const bindOnce = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
@@ -1077,6 +1083,13 @@ document.addEventListener('DOMContentLoaded', () => {
           url = window.validateMediaUrl ? window.validateMediaUrl(urlInput.value) : new URL(urlInput.value.trim()).href;
         } catch (e) {
           return this.showToast(e.message || 'Please enter a media stream URL', 'warning');
+        }
+        if (!isDesktopApp && isYouTube(url)) {
+          if (streamsCard) streamsCard.style.display = 'none';
+          analyzedUrl = null;
+          setStatus(`<i class="fa-brands fa-youtube"></i> YouTube downloads work in the LAS Converter PC app. <a href="${PC_APP_URL}" rel="noopener" style="color:inherit;font-weight:700;text-decoration:underline">Download it here</a> (Windows).`, 'orange');
+          log('youtube link: PC app only');
+          return;
         }
         analyzeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Analyzing...';
         analyzeBtn.disabled = true;
@@ -1848,7 +1861,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 18. Settings
     initSettings() {
       const v = document.getElementById('about-version');
-      const ver = (window.LAS_APP_VERSION && !String(window.LAS_APP_VERSION).startsWith('__')) ? window.LAS_APP_VERSION : '1.9.0';
+      const ver = (window.LAS_APP_VERSION && !String(window.LAS_APP_VERSION).startsWith('__')) ? window.LAS_APP_VERSION : '1.9.1';
       if (v) v.textContent = `v${ver}`;
     },
 
