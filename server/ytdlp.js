@@ -370,6 +370,9 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video')
   if (isBotError(failures.join('\n'))) {
     throw new YtDlpError(`The site needs you to be signed in or confirm you're not a bot (${reason}). Add cookies (from your browser or a cookies.txt) in Settings and try again.`, 'bot_check');
   }
+  const target = args[args.length - 1];
+  const fb = friendlyFacebookError(String(target), reason);
+  if (fb) throw new YtDlpError(fb, 'fb_unavailable');
   throw new YtDlpError(reason, /Unsupported URL/i.test(reason) ? 'unsupported' : 'ytdlp_failed');
 }
 
@@ -390,7 +393,7 @@ const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 /** Follow redirects of share / short links (fb.watch, facebook.com/share/..., vm.tiktok.com, t.co). */
 async function resolveShareUrl(url) {
-  if (!SHORT_LINK.test(url)) return url;
+  if (!SHORT_LINK.test(url)) return resolveFacebookPost(url);
   let cur = url;
   for (let i = 0; i < 6; i++) {
     const loc = await new Promise((resolve) => {
@@ -408,7 +411,44 @@ async function resolveShareUrl(url) {
     cur = next;
   }
   if (cur !== url) log(`resolved share link ${url} -> ${cur}`);
-  return cur;
+  return resolveFacebookPost(cur);
+}
+
+// Facebook post links (/<page>/posts/pfbid..., permalink.php, story.php) answer
+// HTTP 404 to logged-out / datacenter clients, so yt-dlp fails on them. The
+// public video embed (plugins/video.php?href=<post>) still names the post's
+// video id, and the plain watch URL for that id downloads fine.
+const FB_POST = /^https:\/\/(?:www\.|m\.|web\.|mbasic\.)?facebook\.com\/(?:[^/?#]+\/posts\/|permalink\.php|story\.php|groups\/[^/?#]+\/(?:posts|permalink)\/)/i;
+function httpsGetText(url, maxBytes = 1.5e6) {
+  return new Promise((resolve) => {
+    const req = https.request(url, { method: 'GET', headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html', 'Accept-Language': 'en-US,en;q=0.8' }, timeout: 15000 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(''); }
+      let body = ''; res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; if (body.length > maxBytes) { req.destroy(); resolve(body); } });
+      res.on('end', () => resolve(body));
+    });
+    req.on('error', () => resolve(''));
+    req.on('timeout', () => { req.destroy(); resolve(''); });
+    req.end();
+  });
+}
+async function resolveFacebookPost(url) {
+  if (!FB_POST.test(url)) return url;
+  const html = await httpsGetText(`https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}`);
+  const m = /"video_id":"?(\d{6,25})/.exec(html) || /\/videos\/(\d{6,25})/.exec(html);
+  if (!m) { log(`facebook post: no video id found for ${url}`); return url; }
+  const watch = `https://www.facebook.com/watch/?v=${m[1]}`;
+  log(`resolved facebook post ${url} -> ${watch}`);
+  return watch;
+}
+
+/** Turn a raw yt-dlp failure on a Facebook link into a message the user can act on. */
+function friendlyFacebookError(url, reason) {
+  if (!/facebook\.com|fb\.watch/i.test(url)) return null;
+  if (/HTTP Error 404|login|log in|logged-in|Cannot parse data|No video formats|registered users/i.test(reason)) {
+    return 'Facebook won\'t show this post to the server: it is private, needs login, or has no public video. Open the video itself and use Share → Copy link, then paste that link.';
+  }
+  return null;
 }
 
 async function getInfo(url) {
@@ -558,4 +598,4 @@ async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192
   return { file, dir, ext: path.extname(file).slice(1), title: path.basename(file, path.extname(file)) };
 }
 
-module.exports = { formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };
+module.exports = { resolveFacebookPost, friendlyFacebookError, formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };
