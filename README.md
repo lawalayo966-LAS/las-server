@@ -42,3 +42,13 @@ Only download content you have the rights to. MIT licensed.
 ## Website
 
 `web/` is the static LAS CONVERT web build (from the private app repo: `npm run build`, then `dist/` without `downloads/` and the Electron/Capacitor platform files). The server serves it at `/`. API calls from the same origin don't need `LAS_API_TOKEN`, but the per-IP rate limit (`LAS_RATE_PER_HOUR`) still applies. Conversions run in the visitor's browser with the single-thread ffmpeg.wasm core, so no COOP/COEP headers are needed. Set `LAS_WEB_DIR` to serve a different folder.
+
+## SaaS mode (Supabase, R2, Paystack)
+
+The SaaS layer turns on when `SUPABASE_URL` is set; see `.env.example` and `DEPLOY.md` in las-converter-web. In SaaS mode:
+
+- `Authorization: Bearer <Supabase access token>` is verified on every API call (HS256 with `SUPABASE_JWT_SECRET`, or the project's JWKS for RS256/ES256).
+- The plan is read from `profiles`, and the daily quota is counted in `usage_daily` through the `consume_download` RPC.
+- Free downloads are capped at 720p (short side) and 192 kbps MP3. Premium downloads skip the queue, and a copy goes to R2 with a 24 h signed link.
+- New endpoints: `GET /api/me`, `GET /api/history`, `POST /api/pay/initialize`, `POST /api/pay/webhook` (Paystack HMAC-SHA512 signature, re-verified with the Paystack verify API).
+- Tests: `npm test` (offline mocks). `npm run e2e:saas` runs the real server against mocked Supabase, R2 and Paystack with a live Facebook download.
