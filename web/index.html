@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>LAS CONVERT: Free Online Video to MP3, Image & Media Converter</title>
+  <meta name="description" content="Free online media converter: convert video to MP3, images and audio right in your browser, and download Facebook videos. Also available for Windows and Android.">
+  <meta name="keywords" content="video to mp3, media converter, image converter, facebook video downloader, online converter">
+  <meta name="theme-color" content="#0b1020">
+  <link rel="canonical" href="https://las-server.onrender.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="LAS CONVERT">
+  <meta property="og:title" content="LAS CONVERT: free online media & file converter">
+  <meta property="og:description" content="Convert video to MP3, images and audio in your browser (files never leave your device), and download Facebook videos. Windows and Android apps too.">
+  <meta property="og:url" content="https://las-server.onrender.com/">
+  <meta property="og:image" content="https://las-server.onrender.com/og-image.png">
+  <meta name="twitter:card" content="summary">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="favicon.svg">
+  
+  <!-- Modern Typography (Google Fonts CDN) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="src/css/main.css">
+  <link rel="stylesheet" href="src/css/animations.css">
+  <link rel="stylesheet" href="src/css/components.css">
+</head>
+<body class="platform-detecting theme-dark">
+  <div id="las-web-banner" style="display:none; padding:8px 14px; background:linear-gradient(90deg,#0e7490,#6d28d9); color:#fff; font-size:.88rem; text-align:center; line-height:1.6">
+    <strong>LAS CONVERT web</strong>: conversions run in your browser, so your files stay on your device.
+    Get the apps:
+    <a style="color:#fff;font-weight:600;margin-left:6px" href="https://github.com/lawalayo966-LAS/las-server/releases/download/v1.8-build/LAS-Converter.exe" rel="noopener"><i class="fa-brands fa-windows"></i> Windows EXE</a>
+    <a style="color:#fff;font-weight:600;margin-left:10px" href="https://github.com/lawalayo966-LAS/las-server/releases/download/v1.8-build/LAS-Converter.apk" rel="noopener"><i class="fa-brands fa-android"></i> Android APK</a>
+  </div>
+  <script>if (!window.Capacitor && !window.electronAPI && /^https?:$/.test(location.protocol)) document.getElementById('las-web-banner').style.display = 'block';</script>
+  <div class="app-container" id="app">
+    
+    <!-- Top Global Header / Titlebar -->
+    <header class="app-header">
+      <div class="brand-section">
+        <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle Sidebar" title="Toggle Sidebar">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <div class="brand-logo-wrapper">
+          <img src="src/assets/logo-128.png" alt="LAS CONVERT" class="brand-icon" style="width:36px;height:36px;border-radius:8px">
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">LAS <span class="brand-accent">CONVERT</span></div>
+          <div class="brand-subtitle">Convert · Compress · Download</div>
+        </div>
+      </div>
+
+      <!-- Platform Mode Switcher / Indicator -->
+      <div class="platform-bar">
+        <div class="platform-chip active" id="platform-current-badge">
+          <i class="fa-solid fa-circle-check" id="platform-icon"></i>
+          <span id="platform-name">v1.8.0</span>
+        </div>
+</div>
+
+      <!-- Header Status & Action Controls -->
+      <div class="header-actions">
+<button class="icon-btn" id="btn-quick-queue" title="View Active Conversion Queue">
+          <i class="fa-solid fa-list-check"></i>
+          <span class="badge" id="queue-count-badge">0</span>
+        </button>
+
+        <button class="icon-btn" id="btn-global-history" title="Conversion History">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+        </button>
+
+        <button class="icon-btn" id="btn-global-settings" title="System Settings">
+          <i class="fa-solid fa-sliders"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Layout (Sidebar + Content Stage) -->
+    <div class="app-body">
+      
+      <!-- Semi-transparent background overlay for mobile drawer -->
+      <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+      <!-- Left Navigation Sidebar (All 15 Platform Modules) -->
+      <aside class="app-sidebar sidebar" id="sidebar">
+        <div class="sidebar-mobile-header">
+          <div class="sidebar-mobile-title">
+            <i class="fa-solid fa-bolt-lightning text-cyan"></i>
+            <span>LAS CONVERT</span>
+          </div>
+          <button class="icon-btn sidebar-close-btn" id="btn-sidebar-close" title="Close Menu" aria-label="Close Menu">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div class="sidebar-section">
+          <button class="sidebar-section-header" data-section="sidebar-sec-core" aria-expanded="true">
+            <span>CORE SUITE</span>
+            <i class="fa-solid fa-chevron-down chevron"></i>
+          </button>
+          <div class="sidebar-section-body" id="sidebar-sec-core">
+            <nav class="sidebar-nav">
+              <a href="#dashboard" class="nav-item active" data-tab="dashboard">
+                <i class="fa-solid fa-gauge-high"></i>
+                <span>Dashboard</span>
+              </a>
+              <a href="#convert" class="nav-item" data-tab="convert">
+                <i class="fa-solid fa-repeat"></i>
+                <span>Convert</span>
+              </a>
+              <a href="#video-audio" class="nav-item" data-tab="video-audio">
+                <i class="fa-solid fa-film"></i>
+                <span>Video → Audio</span>
+              </a>
+              <a href="#compressor" class="nav-item" data-tab="compressor">
+                <i class="fa-solid fa-file-zipper"></i>
+                <span>Compressor</span>
+              </a>
+              <a href="#batch" class="nav-item" data-tab="batch">
+                <i class="fa-solid fa-boxes-stacked"></i>
+                <span>Batch Queue</span>
+              </a>
+            </nav>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <button class="sidebar-section-header" data-section="sidebar-sec-tools" aria-expanded="true">
+            <span>TOOLS & MEDIA</span>
+            <i class="fa-solid fa-chevron-down chevron"></i>
+          </button>
+          <div class="sidebar-section-body" id="sidebar-sec-tools">
+            <nav class="sidebar-nav">
+              <a href="#speech" class="nav-item" data-tab="speech">
+                <i class="fa-solid fa-microphone-lines"></i>
+                <span>Audio → Text</span>
+              </a>
+              <a href="#download" class="nav-item" data-tab="download">
+                <i class="fa-solid fa-cloud-arrow-down"></i>
+                <span>Download Center</span>
+              </a>
+              <a href="#inspector" class="nav-item" data-tab="inspector">
+                <i class="fa-solid fa-magnifying-glass-chart"></i>
+                <span>Media Inspector</span>
+              </a>
+              <a href="#quick-editor" class="nav-item" data-tab="quick-editor">
+                <i class="fa-solid fa-scissors"></i>
+                <span>Quick Editor</span>
+              </a>
+              <a href="#subtitles" class="nav-item" data-tab="subtitles">
+                <i class="fa-solid fa-closed-captioning"></i>
+                <span>Subtitles</span>
+              </a>
+            </nav>
+          </div>
+        </div>
+
+<div class="sidebar-section">
+          <button class="sidebar-section-header" data-section="sidebar-sec-system" aria-expanded="true">
+            <span>APP</span>
+            <i class="fa-solid fa-chevron-down chevron"></i>
+          </button>
+          <div class="sidebar-section-body" id="sidebar-sec-system">
+            <nav class="sidebar-nav">
+<a href="#history" class="nav-item" data-tab="history">
+                <i class="fa-solid fa-book-bookmark"></i>
+                <span>History</span>
+              </a>
+<a href="#settings" class="nav-item" data-tab="settings">
+                <i class="fa-solid fa-gear"></i>
+                <span>Settings</span>
+              </a>
+            </nav>
+          </div>
+        </div>
+
+        <!-- Sidebar Footer Status -->
+        <div class="sidebar-footer">
+          <div class="worker-status-card">
+            <div class="worker-header">
+              <span class="status-dot online"></span>
+              <span class="worker-text">Engine Ready</span>
+            </div>
+            <div class="worker-subtext" id="engine-threads-info">Files are processed on this device</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Central View Stage -->
+      <main class="app-main" id="main-content">
+
+        <!-- ================= TAB 1: DASHBOARD ================= -->
+        <section class="tab-view active" id="view-dashboard">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Universal Media & File Workstation</h2>
+              <p>Convert, compress and download media &mdash; video, audio, images and subtitles</p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-primary" id="btn-dash-quick-convert">
+                <i class="fa-solid fa-plus"></i> New Conversion
+              </button>
+            </div>
+          </div>
+
+          <!-- Triple Deployment Distribution Showcase Banner -->
+<!-- Quick Action Launchpad -->
+          <div class="dashboard-launchpad">
+            <div class="launch-tile" data-nav="convert" data-sub="video">
+              <div class="tile-icon text-cyan"><i class="fa-solid fa-video"></i></div>
+              <div class="tile-title">Video Transcode</div>
+              <div class="tile-desc">MP4, MKV, WebM, MOV, AVI, GIF</div>
+            </div>
+            <div class="launch-tile" data-nav="convert" data-sub="audio">
+              <div class="tile-icon text-purple"><i class="fa-solid fa-music"></i></div>
+              <div class="tile-title">Audio Studio</div>
+              <div class="tile-desc">MP3, FLAC, AAC, WAV, OGG, OPUS</div>
+            </div>
+            <div class="launch-tile" data-nav="video-audio">
+              <div class="tile-icon text-emerald"><i class="fa-solid fa-file-audio"></i></div>
+              <div class="tile-title">Video → Audio</div>
+              <div class="tile-desc">Extract soundtracks & speech fast</div>
+            </div>
+            <div class="launch-tile" data-nav="compressor">
+              <div class="tile-icon text-orange"><i class="fa-solid fa-down-left-and-up-right-to-center"></i></div>
+              <div class="tile-title">Compressor</div>
+              <div class="tile-desc">Make videos and images smaller</div>
+            </div>
+            <div class="launch-tile" data-nav="convert" data-sub="image">
+              <div class="tile-icon text-pink"><i class="fa-solid fa-image"></i></div>
+              <div class="tile-title">Image Converter</div>
+              <div class="tile-desc">WebP, PNG, JPG, ICO, BMP</div>
+            </div>
+            <div class="launch-tile" data-nav="inspector">
+              <div class="tile-icon text-blue"><i class="fa-solid fa-chart-pie"></i></div>
+              <div class="tile-title">Media Inspector</div>
+              <div class="tile-desc">Codecs, bitrates, streams, tags</div>
+            </div>
+          </div>
+
+          <!-- Real-Time Stats & Hardware Grid -->
+          <div class="dashboard-stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon"><i class="fa-solid fa-gauge"></i></div>
+              <div class="stat-content">
+                <div class="stat-value" id="stat-conversions-today">0</div>
+                <div class="stat-label">Conversions Today</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon"><i class="fa-solid fa-hard-drive"></i></div>
+              <div class="stat-content">
+                <div class="stat-value" id="stat-bytes-saved">0.0 MB</div>
+                <div class="stat-label">Storage Saved</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 2: CONVERT (Video / Audio / Image / File) ================= -->
+        <section class="tab-view" id="view-convert">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Universal File Converter</h2>
+              <p>Choose your media category or drop any file to auto-detect optimal presets</p>
+            </div>
+            <div class="sub-tabs" id="convert-subtabs">
+              <button class="sub-tab-btn active" data-category="video"><i class="fa-solid fa-video"></i> Video</button>
+              <button class="sub-tab-btn" data-category="audio"><i class="fa-solid fa-music"></i> Audio</button>
+              <button class="sub-tab-btn" data-category="image"><i class="fa-solid fa-image"></i> Image</button>
+              <button class="sub-tab-btn" data-category="file"><i class="fa-solid fa-file-archive"></i> Archive & Docs</button>
+            </div>
+          </div>
+
+          <div class="converter-workbench">
+            <!-- Dropzone Area -->
+            <div class="file-dropzone" id="convert-dropzone">
+              <input type="file" id="convert-file-input" class="hidden-file-input" multiple>
+              <div class="dropzone-inner">
+                <div class="dropzone-icon-ring">
+                  <i class="fa-solid fa-cloud-arrow-up"></i>
+                </div>
+                <h3>Drop files here or <span class="browse-link">browse</span></h3>
+                <p id="convert-drop-hint">Supports MP4, MKV, AVI, MOV, WebM, MP3, FLAC, WAV, PNG, JPG, WebP and any file (to ZIP)</p>
+                <div class="dropzone-badge-bar">
+                  <span class="chip">Direct Remux</span>
+                  <span class="chip">Hardware Encoded</span>
+                  <span class="chip">Batch Ready</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Active Conversion Configuration Card (Hidden until file selected) -->
+            <div class="conversion-config-card" id="convert-config-card" style="display: none;">
+              <div class="config-header">
+                <div class="file-meta-summary">
+                  <div class="file-type-icon" id="cfg-file-icon"><i class="fa-solid fa-film"></i></div>
+                  <div>
+                    <h4 id="cfg-file-name">example_video.mp4</h4>
+                    <span class="file-detail" id="cfg-file-size">124.5 MB</span> • 
+                    <span class="file-detail" id="cfg-file-format">H.264 / AAC</span>
+                  </div>
+                </div>
+                <button class="icon-btn text-muted" id="btn-remove-selected-file"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+
+              <div class="config-body grid-2col">
+                <!-- Target Format Selector -->
+                <div class="form-group">
+                  <label><i class="fa-solid fa-arrow-right-arrow-left"></i> Target Format</label>
+                  <select class="form-control" id="convert-target-format">
+                    <!-- Populated dynamically based on category -->
+                  </select>
+                </div>
+
+                <!-- Quality / Preset Profile -->
+                <div class="form-group">
+                  <label><i class="fa-solid fa-sliders"></i> Preset Quality</label>
+                  <select class="form-control" id="convert-preset-quality">
+                    <option value="ultra">Ultra Quality (Lossless / CRF 14)</option>
+                    <option value="high" selected>High Quality (Default / CRF 18)</option>
+                    <option value="medium">Balanced (Web Optimal / CRF 23)</option>
+                    <option value="low">Small File Size (CRF 28)</option>
+                  </select>
+                </div>
+
+                <!-- Video / Audio Codec -->
+                <div class="form-group" id="group-video-codec">
+                  <label><i class="fa-solid fa-microchip"></i> Video Codec</label>
+                  <select class="form-control" id="convert-video-codec">
+                    <option value="h264">H.264 / AVC (Universal Compatibility)</option>
+                    <option value="hevc">H.265 / HEVC (High Efficiency)</option>
+                    <option value="vp9">VP9 (Open Web Standard)</option>
+                    <option value="av1">AV1 (Next-Gen High Compression)</option>
+                    <option value="copy">Direct Stream Copy (No Re-encoding / Instant)</option>
+                  </select>
+                </div>
+
+                <!-- Resolution -->
+                <div class="form-group" id="group-resolution">
+                  <label><i class="fa-solid fa-expand"></i> Resolution Scaling</label>
+                  <select class="form-control" id="convert-resolution">
+                    <option value="original">Keep Original</option>
+                    <option value="4k">4K Ultra HD (3840x2160)</option>
+                    <option value="1080p">1080p Full HD (1920x1080)</option>
+                    <option value="720p">720p HD (1280x720)</option>
+                    <option value="480p">480p SD (854x480)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Action Bar -->
+              <div class="config-actions">
+                <button class="btn btn-secondary" id="btn-add-to-batch-queue">
+                  <i class="fa-solid fa-plus"></i> Add to Batch Queue
+                </button>
+                <button class="btn btn-primary" id="btn-start-single-convert">
+                  <i class="fa-solid fa-play"></i> Convert Now
+                </button>
+              </div>
+            </div>
+
+            <!-- Single Conversion Live Progress Panel -->
+            <div class="conversion-progress-panel" id="convert-progress-panel" style="display: none;">
+              <div class="prog-header">
+                <div class="prog-title">
+                  <i class="fa-solid fa-gear fa-spin text-cyan"></i>
+                  <span id="prog-task-title">Converting Media Stream...</span>
+                </div>
+                <span class="prog-percentage" id="prog-percentage-label">0%</span>
+              </div>
+              <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="prog-bar-fill" style="width: 0%;"></div>
+              </div>
+              <div class="prog-stats-row">
+                <span>Phase: <strong id="prog-phase" class="text-cyan">Processing</strong></span>
+                <span>Status: <strong class="text-emerald">Converting</strong></span>
+              </div>
+              <div class="prog-actions" style="margin-top: 12px; display: flex; justify-content: flex-end;">
+                <button class="btn btn-sm btn-outline-danger" id="btn-cancel-active-convert">
+                  <i class="fa-solid fa-stop"></i> Cancel
+                </button>
+              </div>
+            </div>
+
+            <!-- Single Conversion Success Result Card -->
+            <div class="convert-result-card" id="convert-result-card" style="display: none; background: var(--bg-surface-elevated); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: var(--radius-lg); padding: 24px; margin-top: 18px; box-shadow: 0 0 25px rgba(16, 185, 129, 0.15);">
+              <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: rgba(16, 185, 129, 0.15); display: flex; align-items: center; justify-content: center; color: var(--accent-emerald); font-size: 22px;">
+                  <i class="fa-solid fa-circle-check"></i>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 18px; color: #fff;">Conversion Succeeded!</h3>
+                  <p id="convert-result-name" style="margin: 4px 0 0 0; color: var(--text-secondary); font-family: var(--font-mono); font-size: 13px;">output_converted.mp4</p>
+                </div>
+              </div>
+
+              <!-- Media Preview Area (Audio / Video / Image) -->
+              <div id="convert-result-preview-box" style="display: none; margin-bottom: 16px; padding: 12px; background: var(--bg-base); border-radius: var(--radius-md);">
+                <audio id="convert-result-audio-player" controls style="display: none; width: 100%;"></audio>
+                <video id="convert-result-video-player" controls style="display: none; width: 100%; max-height: 240px; border-radius: var(--radius-sm);"></video>
+                <img id="convert-result-img-preview" style="display: none; max-width: 100%; max-height: 200px; border-radius: var(--radius-sm); margin: 0 auto;" />
+              </div>
+
+              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <button class="btn btn-secondary" id="btn-convert-another">
+                  <i class="fa-solid fa-arrow-left"></i> Convert Another File
+                </button>
+                <button class="btn btn-primary" id="btn-download-converted-result">
+                  <i class="fa-solid fa-download"></i> Save Converted File
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 3: VIDEO -> AUDIO ================= -->
+        <section class="tab-view" id="view-video-audio">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Video → Audio Fast Extractor</h2>
+              <p>Instantly strip audio tracks, soundtrack recordings, and speech from any video file</p>
+            </div>
+          </div>
+
+          <div class="va-workbench">
+            <div class="file-dropzone" id="va-dropzone">
+              <input type="file" id="va-file-input" class="hidden-file-input" accept="video/*">
+              <div class="dropzone-inner">
+                <div class="dropzone-icon-ring text-purple">
+                  <i class="fa-solid fa-music"></i>
+                </div>
+                <h3>Drop Video to Extract Audio or <span class="browse-link">browse</span></h3>
+                <p>Fast stream extraction with zero recompression loss or custom high-bitrate encoding</p>
+              </div>
+            </div>
+
+            <div class="va-controls-card" id="va-controls-card" style="display:none;">
+              <div class="grid-3col">
+                <div class="form-group">
+                  <label>Audio Format</label>
+                  <select class="form-control" id="va-target-format">
+                    <option value="mp3">MP3 (MPEG Audio Layer III)</option>
+                    <option value="flac">FLAC (Lossless Free Audio)</option>
+                    <option value="wav">WAV (Uncompressed PCM)</option>
+                    <option value="m4a">M4A (Apple AAC Audio)</option>
+                    <option value="ogg">OGG (Vorbis Audio)</option>
+                    <option value="opus">OPUS (High Quality Voice/Music)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Audio Bitrate</label>
+                  <select class="form-control" id="va-bitrate">
+                    <option value="320">320 kbps (Studio Master)</option>
+                    <option value="256">256 kbps (Very High)</option>
+                    <option value="192" selected>192 kbps (Standard High)</option>
+                    <option value="128">128 kbps (Compact)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Channels</label>
+                  <select class="form-control" id="va-channels">
+                    <option value="original">Original (Preserve Surround/Stereo)</option>
+                    <option value="stereo">Stereo (2.0)</option>
+                    <option value="mono">Mono (1.0 - Voice Optimal)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Audio Waveform Preview Area -->
+              <div class="audio-waveform-container">
+                <div class="waveform-title"><i class="fa-solid fa-wave-square"></i> Audio Signal Visualization</div>
+                <canvas id="va-waveform-canvas" width="800" height="80"></canvas>
+              </div>
+
+              <!-- Real-time Extracted Audio Player -->
+              <div class="audio-player-preview-box" id="va-audio-player-box" style="display:none; margin-top:16px; background:var(--bg-base); padding:16px; border-radius:var(--radius-md); border:1px solid var(--border-subtle);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                  <strong style="color:var(--accent-emerald); font-size:13px;"><i class="fa-solid fa-circle-check"></i> Extracted Audio (100% Playable Master):</strong>
+                  <span id="va-audio-duration-badge" class="badge badge-cyan">00:00</span>
+                </div>
+                <audio id="va-audio-player" controls style="width:100%; border-radius:30px;"></audio>
+              </div>
+
+              <div class="config-actions">
+                <button class="btn btn-secondary" id="btn-cancel-va" style="display:none;">
+                  <i class="fa-solid fa-arrow-left"></i> Extract Another
+                </button>
+                <button class="btn btn-primary" id="btn-start-extract-audio">
+                  <i class="fa-solid fa-bolt"></i> Extract Audio Track
+                </button>
+              </div>
+            </div>
+
+            <!-- Video-Audio Live Progress Panel -->
+            <div class="conversion-progress-panel" id="va-progress-panel" style="display: none; margin-top: 18px;">
+              <div class="prog-header">
+                <div class="prog-title">
+                  <i class="fa-solid fa-gear fa-spin text-cyan"></i>
+                  <span id="va-prog-task-title">Extracting Audio Track...</span>
+                </div>
+                <span class="prog-percentage" id="va-prog-percentage-label">0%</span>
+              </div>
+              <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="va-prog-bar-fill" style="width: 0%;"></div>
+              </div>
+              <div class="prog-stats-row">
+                <span>Phase: <strong id="va-prog-stage" class="text-cyan">Reading Audio Stream</strong></span>
+                <span>Bitrate: <strong id="va-prog-bitrate">320 kbps</strong></span>
+                <span>Status: <strong class="text-emerald">Processing</strong></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 4: COMPRESSOR ================= -->
+        <section class="tab-view" id="view-compressor">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Smart Media Compressor</h2>
+              <p>Reduce video, image, or audio sizes with intelligent multi-pass quantization</p>
+            </div>
+          </div>
+
+          <div class="compressor-workbench">
+            <div class="file-dropzone" id="comp-dropzone">
+              <input type="file" id="comp-file-input" class="hidden-file-input">
+              <div class="dropzone-inner">
+                <div class="dropzone-icon-ring text-orange">
+                  <i class="fa-solid fa-file-zipper"></i>
+                </div>
+                <h3>Drop File to Compress or <span class="browse-link">browse</span></h3>
+                <p>Supports Videos (MP4, MKV), Images (PNG, JPG, WebP), and Audio</p>
+              </div>
+            </div>
+
+            <div class="comp-interactive-card" id="comp-interactive-card" style="display: none;">
+              <div class="comp-stats-header">
+                <div class="comp-size-metric">
+                  <span class="label">Original Size</span>
+                  <span class="value" id="comp-orig-size">185.0 MB</span>
+                </div>
+                <div class="comp-arrow"><i class="fa-solid fa-arrow-right"></i></div>
+                <div class="comp-size-metric target">
+                  <span class="label">Estimated Target Size</span>
+                  <span class="value text-emerald" id="comp-est-size">46.2 MB (-75%)</span>
+                </div>
+              </div>
+
+              <!-- Compression Slider -->
+              <div class="slider-control-box">
+                <div class="slider-labels">
+                  <span>Compression Level: <strong id="comp-slider-val">75%</strong></span>
+                  <span class="badge badge-orange" id="comp-mode-badge">Smart Lossy (High Efficiency)</span>
+                </div>
+                <input type="range" id="comp-ratio-slider" min="10" max="90" value="75" class="custom-range">
+                <div class="slider-ticks">
+                  <span>Light (-20%)</span>
+                  <span>Balanced (-50%)</span>
+                  <span>Maximum (-75%)</span>
+                  <span>Ultra (-90%)</span>
+                </div>
+              </div>
+
+              <div class="config-actions">
+                <button class="btn btn-primary" id="btn-start-compression">
+                  <i class="fa-solid fa-compress"></i> Start Compression
+                </button>
+              </div>
+
+              <!-- Compressor Live Progress Panel -->
+              <div class="conversion-progress-panel" id="comp-progress-panel" style="display: none; margin-top: 18px;">
+                <div class="prog-header">
+                  <div class="prog-title">
+                    <i class="fa-solid fa-gear fa-spin text-cyan"></i>
+                    <span id="comp-prog-task-title">Compressing Media Stream...</span>
+                  </div>
+                  <span class="prog-percentage" id="comp-prog-percentage-label">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                  <div class="progress-bar-fill" id="comp-prog-bar-fill" style="width: 0%;"></div>
+                </div>
+                <div class="prog-stats-row">
+                  <span>Phase: <strong id="comp-prog-stage" class="text-cyan">Compressing Media</strong></span>
+                  <span>Mode: <strong id="comp-prog-mode" class="text-emerald">Adaptive Compression</strong></span>
+                  <span>Status: <strong id="compress-status" class="text-emerald">Compressing... 0%</strong></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 5: BATCH CONVERTER ================= -->
+        <section class="tab-view" id="view-batch">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Batch Conversion Engine</h2>
+              <p>Process dozens of files concurrently with unified queue controls and auto-naming</p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-secondary" id="btn-clear-completed-batch">
+                <i class="fa-solid fa-broom"></i> Clear Finished
+              </button>
+              <button class="btn btn-primary" id="btn-start-all-batch">
+                <i class="fa-solid fa-play"></i> Start All
+              </button>
+            </div>
+          </div>
+
+          <div class="batch-workbench">
+            <div class="batch-controls-bar">
+              <div class="batch-bulk-actions">
+                <label>Set All Targets to:</label>
+                <select class="form-control inline-select" id="batch-bulk-target-select">
+                  <option value="mp4">MP4 (Video)</option>
+                  <option value="webm">WebM (Video)</option>
+                  <option value="mp3">MP3 (Audio)</option>
+                  <option value="webp">WebP (Image)</option>
+                  <option value="png">PNG (Image)</option>
+                </select>
+                <button class="btn btn-sm btn-secondary" id="btn-apply-bulk-target">Apply to Queue</button>
+              </div>
+              <div class="concurrency-selector">
+                <label>Parallel Workers:</label>
+                <select class="form-control inline-select" id="batch-threads-select">
+                  <option value="2">2 Concurrent</option>
+                  <option value="4" selected>4 Concurrent</option>
+                  <option value="8">8 Concurrent</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Batch Queue Table -->
+            <div class="table-responsive">
+              <table class="batch-table" id="batch-queue-table">
+                <thead>
+                  <tr>
+                    <th>File Name</th>
+                    <th>Source Type</th>
+                    <th>Size</th>
+                    <th>Target Format</th>
+                    <th>Status / Progress</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="batch-table-body">
+                  <tr class="empty-row">
+                    <td colspan="6">
+                      <div class="empty-state">
+                        <i class="fa-solid fa-inbox"></i>
+                        <p>No items in batch queue. Drag & drop files or add from Convert tab.</p>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 6: DOWNLOAD CENTER ================= -->
+        <section class="tab-view" id="view-download">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Media Stream & URL Download Center</h2>
+              <p>Download video and audio streams directly from URLs and convert on-the-fly</p>
+            </div>
+          </div>
+
+          <div class="download-workbench">
+            <div class="url-input-card">
+              <div class="url-input-group">
+                <i class="fa-solid fa-link input-icon"></i>
+                <input type="url" id="dl-url-input" class="form-control url-box" placeholder="Paste media stream or video URL (e.g. https://...)" />
+                <button class="btn btn-primary" id="btn-analyze-url">
+                  <i class="fa-solid fa-magnifying-glass"></i> Analyze Link
+                </button>
+              </div>
+            </div>
+
+            <div class="dl-streams-card" id="dl-streams-card" style="display:none;">
+              <div class="stream-media-preview">
+                <div class="stream-thumb"><i class="fa-solid fa-circle-play"></i></div>
+                <div class="stream-info">
+                  <h4 id="dl-media-title">Universal Stream Media Item</h4>
+                  <p id="dl-media-author"></p>
+                </div>
+              </div>
+
+              <div class="stream-formats-table-wrapper">
+                <h4>Available Streams & Formats</h4>
+                <table class="stream-table">
+                  <thead>
+                    <tr>
+                      <th>Resolution / Format</th>
+                      <th>Bitrate</th>
+                      <th>Size</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dl-formats-body">
+                  </tbody>
+                </table>
+
+              </div>
+            </div>
+
+            <div style="margin-top:10px; text-align:right"><button class="btn btn-sm btn-outline" id="btn-copy-debug-log" type="button"><i class="fa-solid fa-bug"></i> Copy debug log</button></div>
+            <div id="download-status" class="badge badge-cyan" style="display: none; margin-top: 14px; font-size: 0.9rem; padding: 8px 14px; white-space: normal; word-break: break-all;"></div>
+            <div id="yt-bot-help" style="display:none; margin-top:14px; padding:16px; border-radius:12px; background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.35); text-align:left">
+              <strong><i class="fa-solid fa-robot"></i> The site wants you signed in / to confirm you're not a bot</strong>
+              <p style="margin:8px 0">This happens on some connections (common on shared/mobile IPs). Private or login-only Facebook/Instagram videos need this too. Give the app your browser cookies for that site and retry:</p>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+                <select id="yt-bot-browser" class="form-control" style="max-width:220px">
+                  <option value="chrome">Google Chrome</option><option value="edge">Microsoft Edge</option>
+                  <option value="brave">Brave</option><option value="firefox">Firefox</option><option value="avast">Avast Secure Browser</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="yt-bot-use-browser"><i class="fa-solid fa-cookie-bite"></i> Use cookies from browser &amp; retry</button>
+                <button class="btn btn-secondary btn-sm" id="yt-bot-load-file"><i class="fa-solid fa-file-import"></i> Load cookies.txt &amp; retry</button>
+              </div>
+              <ol style="margin:10px 0 0 18px; opacity:.85; font-size:.9rem">
+                <li>Sign in to the site (youtube.com, facebook.com, …) in your browser.</li>
+                <li>Easiest &amp; most reliable: install the <b>Get cookies.txt LOCALLY</b> extension, open that site, click it &rarr; <b>Export</b>, then press <b>Load cookies.txt</b>.</li>
+                <li>Or close the browser completely and press <b>Use cookies from browser</b> (may fail on Chrome/Edge/Avast because Windows encrypts their cookies).</li>
+              </ol>
+            </div>
+
+            <!-- Download LAS CONVERT for Other Devices -->
+</div>
+        </section>
+
+        <!-- ================= TAB 7: MEDIA INSPECTOR ================= -->
+        <section class="tab-view" id="view-inspector">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Deep Media Inspector & Analyzer</h2>
+              <p>Check codecs, resolution, duration, bitrate and audio channels</p>
+            </div>
+          </div>
+
+          <div class="inspector-workbench">
+            <div class="file-dropzone" id="inspect-dropzone">
+              <input type="file" id="inspect-file-input" class="hidden-file-input">
+              <div class="dropzone-inner">
+                <div class="dropzone-icon-ring text-blue">
+                  <i class="fa-solid fa-magnifying-glass-chart"></i>
+                </div>
+                <h3>Drop any media file to inspect</h3>
+                <p>Shows container, codecs, resolution, duration and bitrate</p>
+              </div>
+            </div>
+
+            <div class="inspector-results-card" id="inspector-results-card" style="display:none;">
+              <div class="inspector-grid">
+                <div class="inspect-panel">
+                  <h4><i class="fa-solid fa-circle-info"></i> Container & General</h4>
+                  <div class="meta-row"><span class="k">Format:</span><span class="v" id="ins-format">-</span></div>
+                  <div class="meta-row"><span class="k">File Size:</span><span class="v" id="ins-size">-</span></div>
+                  <div class="meta-row"><span class="k">Duration:</span><span class="v" id="ins-duration">-</span></div>
+                  <div class="meta-row"><span class="k">Overall Bitrate:</span><span class="v" id="ins-bitrate">-</span></div>
+                </div>
+
+                <div class="inspect-panel">
+                  <h4><i class="fa-solid fa-video"></i> Video Stream #0</h4>
+                  <div class="meta-row"><span class="k">Codec:</span><span class="v" id="ins-v-codec">-</span></div>
+                  <div class="meta-row"><span class="k">Resolution:</span><span class="v" id="ins-v-res">-</span></div>
+                  <div class="meta-row"><span class="k">Frame Rate:</span><span class="v" id="ins-v-fps">-</span></div>
+                  <div class="meta-row"><span class="k">Color Space:</span><span class="v" id="ins-v-colorspace">BT.709 / YUV420P</span></div>
+                </div>
+
+                <div class="inspect-panel">
+                  <h4><i class="fa-solid fa-music"></i> Audio Stream #1</h4>
+                  <div class="meta-row"><span class="k">Codec:</span><span class="v" id="ins-a-codec">-</span></div>
+                  <div class="meta-row"><span class="k">Channels:</span><span class="v" id="ins-a-channels">-</span></div>
+                  <div class="meta-row"><span class="k">Sample Rate:</span><span class="v" id="ins-a-samplerate">-</span></div>
+                  <div class="meta-row"><span class="k">Bit Depth:</span><span class="v" id="ins-a-bitdepth">16-bit PCM</span></div>
+                </div>
+              </div>
+
+              <!-- Raw Stream Tags / Hex Dump Preview -->
+              <div class="raw-meta-box">
+                <h4><i class="fa-solid fa-code"></i> Metadata Tree & Atom Hierarchy</h4>
+                <pre id="ins-raw-meta">Loading metadata inspection...</pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 8: QUICK EDITOR ================= -->
+        <section class="tab-view" id="view-quick-editor">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Quick Media Editor</h2>
+              <p>Trim video/audio segments, adjust volume, change playback speed, and apply aspect ratio crops</p>
+            </div>
+          </div>
+
+          <div class="editor-workbench">
+            <div class="file-dropzone" id="editor-dropzone">
+              <input type="file" id="editor-file-input" class="hidden-file-input" accept="video/*,audio/*">
+              <div class="dropzone-inner">
+                <div class="dropzone-icon-ring text-pink">
+                  <i class="fa-solid fa-scissors"></i>
+                </div>
+                <h3>Drop Video or Audio to Edit</h3>
+                <p>Trim, crop, volume boost, speedup, and rotate</p>
+              </div>
+            </div>
+
+            <div class="editor-stage-card" id="editor-stage-card" style="display:none;">
+              <div class="media-preview-container">
+                <video id="editor-video-preview" controls></video>
+              </div>
+
+              <div class="editor-controls-grid">
+                <div class="editor-control-box">
+                  <label><i class="fa-solid fa-clock"></i> Start Cut Time</label>
+                  <input type="text" class="form-control" id="edit-trim-start" value="00:00:00" placeholder="00:00:00">
+                </div>
+                <div class="editor-control-box">
+                  <label><i class="fa-solid fa-clock"></i> End Cut Time</label>
+                  <input type="text" class="form-control" id="edit-trim-end" value="00:00:30" placeholder="00:00:30">
+                </div>
+                <div class="editor-control-box">
+                  <label><i class="fa-solid fa-gauge"></i> Speed Multiplier</label>
+                  <select class="form-control" id="edit-speed">
+                    <option value="0.5">0.5x (Slow-mo)</option>
+                    <option value="1.0" selected>1.0x (Normal)</option>
+                    <option value="1.25">1.25x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2.0">2.0x (Fast)</option>
+                  </select>
+                </div>
+                <div class="editor-control-box">
+                  <label><i class="fa-solid fa-volume-high"></i> Audio Gain Boost</label>
+                  <select class="form-control" id="edit-volume">
+                    <option value="100" selected>100% (Original)</option>
+                    <option value="150">150% (+3dB Boost)</option>
+                    <option value="200">200% (+6dB High Boost)</option>
+                    <option value="0">Mute Audio</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="config-actions">
+                <button class="btn btn-primary" id="btn-export-edited-media">
+                  <i class="fa-solid fa-floppy-disk"></i> Render & Export Edit
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 9: SUBTITLES ================= -->
+        <section class="tab-view" id="view-subtitles">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Subtitle Studio & Converter</h2>
+              <p>Convert subtitle formats (SRT, VTT, ASS, TTML), adjust timing synchronization, and burn in hard subs</p>
+            </div>
+          </div>
+
+          <div class="subtitles-workbench">
+            <div class="subtitles-grid">
+              <div class="sub-panel">
+                <h4>1. Source Subtitle / Video</h4>
+                <div class="file-dropzone dropzone-compact" id="sub-dropzone">
+                  <input type="file" id="sub-file-input" class="hidden-file-input" accept=".srt,.vtt,.ass,.txt,video/*">
+                  <div class="dropzone-inner">
+                    <i class="fa-solid fa-closed-captioning fa-2x"></i>
+                    <p>Drop Subtitle (.srt, .vtt) or Video</p>
+                  </div>
+                </div>
+
+                <div class="form-group mt-3">
+                  <label>Target Subtitle Format</label>
+                  <select class="form-control" id="sub-target-fmt">
+                    <option value="srt">SubRip (.SRT)</option>
+                    <option value="vtt">WebVTT (.VTT)</option>
+                    <option value="ass">Advanced SubStation Alpha (.ASS)</option>
+                    <option value="txt">Plain Text Transcript (.TXT)</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label>Timing Offset Shifter</label>
+                  <div class="input-with-btn">
+                    <input type="number" class="form-control" id="sub-offset-ms" value="0" step="100" placeholder="± ms">
+                    <span class="unit">ms</span>
+                  </div>
+                </div>
+
+                <button class="btn btn-primary w-100" id="btn-convert-subtitles">
+                  <i class="fa-solid fa-arrows-rotate"></i> Convert Subtitle Format
+                </button>
+              </div>
+
+              <div class="sub-panel">
+                <h4>2. Subtitle Live Preview & Editor</h4>
+                <textarea class="form-control code-editor" id="sub-editor-content" placeholder="Subtitle lines will appear here for direct editing...
+1
+00:00:01,000 --> 00:00:04,500
+Welcome to LAS CONVERT Universal Workstation!
+
+2
+00:00:05,000 --> 00:00:08,200
+Hardware accelerated conversion across all platforms."></textarea>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 9B: AUDIO TO TEXT (WORD-FOR-WORD) ================= -->
+        <section class="tab-view" id="view-speech">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Audio → Text Word-for-Word Transcriber & Translator</h2>
+              <p>Ultra high fidelity speech recognition, word-level timecodes, multi-language translation, and live dictation</p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-secondary" id="btn-toggle-live-dictation">
+                <i class="fa-solid fa-microphone"></i> <span id="dictation-btn-text">Live Microphone Dictation</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="speech-workbench">
+            <div class="speech-grid">
+              <!-- Left Control / Input Panel -->
+              <div class="speech-input-panel">
+                <div class="file-dropzone" id="speech-dropzone">
+                  <input type="file" id="speech-file-input" class="hidden-file-input" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.mp4,.mov,.mkv,.webm">
+                  <div class="dropzone-inner">
+                    <div class="dropzone-icon-ring text-purple">
+                      <i class="fa-solid fa-microphone-lines"></i>
+                    </div>
+                    <h3>Drop Audio or Video to Transcribe</h3>
+                    <p>Supports MP3, WAV, MP4, M4A, MOV, MKV, FLAC, AAC, WebM</p>
+                  </div>
+                </div>
+
+                <div class="speech-selected-card" id="speech-selected-card" style="display:none;">
+                  <div class="media-preview-header">
+                    <div class="file-summary">
+                      <i class="fa-solid fa-file-audio text-purple fa-2x"></i>
+                      <div>
+                        <h4 id="speech-file-name">audio_sample.mp3</h4>
+                        <span id="speech-file-size" class="text-muted">3.4 MB</span>
+                      </div>
+                    </div>
+                    <button class="icon-btn text-danger" id="btn-remove-speech-file"><i class="fa-solid fa-trash"></i></button>
+                  </div>
+
+                  <div class="form-group mt-3">
+                    <label><i class="fa-solid fa-microphone text-purple"></i> Spoken Audio Source Language</label>
+                    <select class="form-control" id="speech-lang-select">
+                      <option value="en-US" selected>English (United States)</option>
+                      <option value="en-GB">English (United Kingdom)</option>
+                      <option value="es-ES">Spanish (Español)</option>
+                      <option value="fr-FR">French (Français)</option>
+                      <option value="de-DE">German (Deutsch)</option>
+                      <option value="yo-NG">Yoruba (Nigeria)</option>
+                      <option value="ha-NG">Hausa (Nigeria)</option>
+                      <option value="ig-NG">Igbo (Nigeria)</option>
+                      <option value="ar-SA">Arabic (العربية)</option>
+                      <option value="zh-CN">Chinese (Mandarin 简体中文)</option>
+                      <option value="ja-JP">Japanese (日本語)</option>
+                      <option value="pt-BR">Portuguese (Português)</option>
+                      <option value="it-IT">Italian (Italiano)</option>
+                      <option value="ru-RU">Russian (Русский)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label><i class="fa-solid fa-language text-cyan"></i> Target Translation Language</label>
+                    <select class="form-control" id="speech-target-lang-select">
+                      <option value="es-ES" selected>Spanish (Español)</option>
+                      <option value="fr-FR">French (Français)</option>
+                      <option value="de-DE">German (Deutsch)</option>
+                      <option value="yo-NG">Yoruba (Nigeria)</option>
+                      <option value="ha-NG">Hausa (Nigeria)</option>
+                      <option value="ig-NG">Igbo (Nigeria)</option>
+                      <option value="ar-SA">Arabic (العربية)</option>
+                      <option value="zh-CN">Chinese (Mandarin 简体中文)</option>
+                      <option value="ja-JP">Japanese (日本語)</option>
+                      <option value="pt-BR">Portuguese (Português)</option>
+                      <option value="it-IT">Italian (Italiano)</option>
+                      <option value="ru-RU">Russian (Русский)</option>
+                      <option value="en-US">English (United States)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label><i class="fa-solid fa-brain text-purple"></i> Whisper AI Speech Model</label>
+                    <select class="form-control" id="speech-model-select">
+                      <option value="Xenova/whisper-base" selected>Whisper Base (~73MB — Recommended for Accents & Music)</option>
+                      <option value="Xenova/whisper-small">Whisper Small (~240MB — Studio Quality for Speeches & Noise)</option>
+                      <option value="Xenova/whisper-tiny.en">Whisper Tiny English (~39MB — Fast / Low-RAM)</option>
+                      <option value="Xenova/whisper-tiny">Whisper Tiny Multilingual (~39MB — Fast Mobile)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label><i class="fa-solid fa-sliders"></i> Alignment & Timestamp Precision</label>
+                    <select class="form-control" id="speech-precision-select">
+                      <option value="word" selected>Word-for-Word Timestamps (Sub-second)</option>
+                      <option value="sentence">Sentence & Paragraph Chunks</option>
+                      <option value="raw">Continuous Unbroken Text</option>
+                    </select>
+                  </div>
+
+                  <button class="btn btn-primary w-100" id="btn-start-speech-transcribe">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> Transcribe & Translate Word-for-Word
+                  </button>
+                  <button class="btn btn-secondary w-100 mt-2" id="btn-retranslate-speech" style="display:none;">
+                    <i class="fa-solid fa-arrows-rotate"></i> Re-Translate to Target Language
+                  </button>
+                </div>
+
+                <!-- Live Audio Waveform / Player -->
+                <div class="speech-player-card" id="speech-player-card" style="display:none;">
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h4><i class="fa-solid fa-play text-cyan"></i> Synchronized Audio Playback</h4>
+                    <span class="badge badge-cyan" id="speech-karaoke-status"><i class="fa-solid fa-music"></i> Karaoke Follow: Active</span>
+                  </div>
+                  <audio id="speech-audio-player" controls class="w-100"></audio>
+                  <div class="speech-speed-bar mt-2">
+                    <span class="text-muted text-xs me-2">Speed:</span>
+                    <button class="btn-speed-chip" data-speed="0.75">0.75x</button>
+                    <button class="btn-speed-chip active" data-speed="1.0">1.0x</button>
+                    <button class="btn-speed-chip" data-speed="1.25">1.25x</button>
+                    <button class="btn-speed-chip" data-speed="1.5">1.5x</button>
+                    <button class="btn-speed-chip" data-speed="2.0">2.0x</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right Live Word-by-Word Output Display -->
+              <div class="speech-output-panel">
+                <div class="speech-output-card">
+                  <div class="output-card-header">
+                    <div class="output-titles">
+                      <h4><i class="fa-solid fa-align-left text-cyan"></i> Real-time Word Stream & Word-for-Word Translation</h4>
+                      <div class="word-stats-badge">
+                        <span id="speech-word-count">0 words</span> • <span id="speech-status-indicator" class="chip status-ready">Ready</span> • <span class="badge badge-purple" title="Whisper-tiny 40MB ONNX AI model running on WebAssembly background Web Worker"><i class="fa-solid fa-microchip"></i> 40MB Whisper AI Worker</span>
+                      </div>
+                    </div>
+                    <div class="output-header-actions">
+                      <div class="dropdown-actions">
+                        <button class="btn btn-sm btn-outline" id="btn-copy-transcript" title="Copy original transcript">
+                          <i class="fa-solid fa-copy"></i> Copy Spoken
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-copy-translated" title="Copy translated text">
+                          <i class="fa-solid fa-clone"></i> Copy Translated
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-tts-spoken" title="Listen to spoken audio with TTS">
+                          <i class="fa-solid fa-volume-high"></i> TTS Spoken
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-tts-translated" title="Listen to translation with native TTS">
+                          <i class="fa-solid fa-headphones"></i> TTS Translated
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-download-transcript-txt" title="Download original as .TXT">
+                          <i class="fa-solid fa-file-lines"></i> .TXT (Spoken)
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-download-translated-txt" title="Download translated as .TXT">
+                          <i class="fa-solid fa-file-lines"></i> .TXT (Trans)
+                        </button>
+                        <button class="btn btn-sm btn-primary" id="btn-download-bilingual-srt" title="Download Bilingual SubRip Subtitles .SRT">
+                          <i class="fa-solid fa-closed-captioning"></i> Bilingual .SRT
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-download-transcript-srt" title="Download Spoken Subtitles .SRT">
+                          <i class="fa-solid fa-closed-captioning"></i> Spoken .SRT
+                        </button>
+                        <button class="btn btn-sm btn-outline" id="btn-download-bilingual-vtt" title="Download Bilingual WebVTT .VTT">
+                          <i class="fa-solid fa-code"></i> Bilingual .VTT
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Word-by-Word Interactive Bubble Container -->
+                  <div class="speech-words-interactive-box" id="speech-interactive-words">
+                    <div class="empty-state">
+                      <i class="fa-solid fa-wave-square fa-2x text-muted"></i>
+                      <p>Drop an audio file or click "Live Microphone Dictation" to see word-for-word transcript and translation stream in real time.</p>
+                    </div>
+                  </div>
+
+                  <!-- Dual Editable Clean Text View (Spoken vs Translated) -->
+                  <div class="speech-dual-editor-grid">
+                    <div class="speech-editable-area">
+                      <div class="d-flex justify-content-between align-items-center mb-1">
+                        <label><i class="fa-solid fa-pen-to-square text-purple"></i> Spoken Original Transcript</label>
+                        <span class="text-xs text-muted" id="speech-src-lang-tag">en-US</span>
+                      </div>
+                      <textarea class="form-control code-editor" id="speech-full-text-editor" rows="6" placeholder="Spoken transcribed text will appear here..."></textarea>
+                    </div>
+                    <div class="speech-editable-area">
+                      <div class="d-flex justify-content-between align-items-center mb-1">
+                        <label><i class="fa-solid fa-language text-cyan"></i> Word-for-Word Translated Transcript</label>
+                        <span class="text-xs text-cyan" id="speech-target-lang-tag">es-ES</span>
+                      </div>
+                      <textarea class="form-control code-editor" id="speech-translated-text-editor" rows="6" placeholder="Word-for-word translated text will appear here..."></textarea>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 10: ANDROID TOOLS ================= -->
+<!-- ================= TAB 11: IPHONE / IOS TOOLS HUB ================= -->
+<!-- ================= TAB 12: LIVE PROCESSING ================= -->
+<!-- ================= TAB 13: HISTORY ================= -->
+        <section class="tab-view" id="view-history">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Conversion History & Audit Log</h2>
+              <p>View, search, filter, and re-run all previous media conversion operations</p>
+            </div>
+            <div class="view-actions">
+              <button class="btn btn-secondary" id="btn-export-history-json">
+                <i class="fa-solid fa-file-export"></i> Export JSON
+              </button>
+              <button class="btn btn-outline-danger" id="btn-clear-all-history">
+                <i class="fa-solid fa-trash-can"></i> Clear History
+              </button>
+            </div>
+          </div>
+
+          <div class="history-workbench">
+            <div class="history-search-bar">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <input type="text" id="history-search-input" class="form-control" placeholder="Search history by filename, format, or date..." />
+            </div>
+
+            <div class="table-responsive">
+              <table class="batch-table" id="history-table">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Source File</th>
+                    <th>Target Format</th>
+                    <th>Input Size</th>
+                    <th>Output Size</th>
+                    <th>Savings</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="history-table-body">
+                  <!-- Dynamically populated from History Engine -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= TAB 14: ERROR CENTER ================= -->
+<!-- ================= TAB 15: SETTINGS ================= -->
+        <section class="tab-view" id="view-settings">
+          <div class="view-header">
+            <div class="view-titles">
+              <h2>Settings &amp; About</h2>
+              <p>Download cookies, download server, privacy and app information</p>
+            </div>
+            <div class="view-actions">
+            </div>
+          </div>
+
+          <div class="settings-workbench">
+            <div class="settings-section-card" id="yt-cookies-card">
+              <h3><i class="fa-solid fa-cookie-bite"></i> YouTube / Facebook cookies</h3>
+              <p style="opacity:.8">If YouTube says &ldquo;Sign in to confirm you're not a bot&rdquo;, or a Facebook/Instagram video is private or login-only, the downloader needs your login cookies for that site. They stay on this PC (saved in the app's data folder).</p>
+              <div class="setting-toggle-row">
+                <div><strong>Cookie source</strong><p id="yt-cookies-state">Desktop app only.</p></div>
+                <select id="yt-cookies-mode" class="form-control" style="max-width:260px">
+                  <option value="auto">Automatic (try installed browsers if needed)</option>
+                  <option value="browser">From a browser</option>
+                  <option value="file">From cookies.txt file</option>
+                  <option value="none">Don't use cookies</option>
+                </select>
+              </div>
+              <div class="setting-toggle-row" id="yt-cookies-browser-row">
+                <div><strong>Browser</strong><p>Close the browser first; Chrome/Edge/Avast on Windows often lock or encrypt cookies, so cookies.txt is the most reliable.</p></div>
+                <select id="yt-cookies-browser" class="form-control" style="max-width:260px">
+                  <option value="chrome">Google Chrome</option>
+                  <option value="edge">Microsoft Edge</option>
+                  <option value="brave">Brave</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="avast">Avast Secure Browser</option>
+                </select>
+              </div>
+              <div class="setting-toggle-row" id="las-server-row">
+                <div><strong>Download server (advanced)</strong><p id="las-server-state">Mobile app: leave empty to use the built-in LAS CONVERT server. Or enter your own, e.g. http://192.168.1.20:3000.</p></div>
+                <div style="display:flex; gap:6px">
+                  <input type="url" id="las-server-url" class="form-control" placeholder="Built-in server" style="max-width:220px">
+                  <button class="btn btn-secondary" id="las-server-save">Save</button>
+                </div>
+              </div>
+              <div class="setting-toggle-row">
+                <div><strong>cookies.txt</strong><p>Install the &ldquo;Get cookies.txt LOCALLY&rdquo; extension, open the site (youtube.com, facebook.com, instagram.com…) while signed in, click the extension &rarr; Export, then load the file here.</p></div>
+                <button class="btn btn-secondary" id="yt-cookies-load"><i class="fa-solid fa-file-import"></i> Load cookies.txt</button>
+              </div>
+              <div class="settings-section-card mt-3" id="about-card">
+              <h3><i class="fa-solid fa-circle-info"></i> About LAS CONVERT</h3>
+              <p><strong>LAS CONVERT</strong> <span id="about-version">v1.8.0</span> &mdash; convert, compress and download video, audio, images and subtitles.</p>
+              <h4 style="margin-top:12px">Privacy</h4>
+              <p>Files you convert, compress, edit or transcribe are processed <strong>on this device</strong> and are not uploaded. Online downloads (YouTube, Facebook, &hellip;) are fetched by the download server: on the desktop app that runs locally on this PC; on the mobile app it is the LAS CONVERT download server, which receives the link you paste and deletes the file after sending it to you. Cookies you add stay in this app's data folder.</p>
+              <h4 style="margin-top:12px">Disclaimer</h4>
+              <p>Only download or convert content you own or have the rights or permission to use. Respect the terms of service of the sites you download from and the copyright laws of your country.</p>
+              <p style="opacity:.7">Open-source components: FFmpeg, yt-dlp, deno, Electron, Capacitor. MIT licensed.</p>
+            </div>
+          </div>
+
+</div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- Global Toast Notification Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Export Release Package Modal Dialog -->
+</div>
+
+  <!-- Scripts -->
+  <script src="src/core/las-config.js"></script>
+  <script type="module" src="src/core/server-bridge.js"></script>
+  <script type="module" src="src/core/ffmpeg-bridge.js"></script>
+  <script type="module" src="src/core/live-dictation.js"></script>
+  <script src="src/platforms/platform-bridge.js"></script>
+  <script src="src/core/engine.js"></script>
+  <script src="src/core/video.js"></script>
+  <script src="src/core/audio.js"></script>
+  <script src="src/core/speech.js"></script>
+  <script src="src/core/image.js"></script>
+  <script type="module" src="src/core/audioExtractor.js"></script>
+  <script type="module" src="src/core/srtFormatter.js"></script>
+  <script type="module" src="src/core/compressor.js"></script>
+  <script src="src/core/inspector.js"></script>
+  <script type="module" src="src/core/download.js"></script>
+  <script type="module" src="src/core/subtitles.js"></script>
+  <script src="src/core/history.js"></script>
+  <script type="module" src="src/core/file-reader.js"></script>
+  <script src="src/ui/app.js"></script>
+</body>
+</html>

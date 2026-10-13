@@ -18,6 +18,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 COPY server ./server
+# LAS CONVERT website (static web build) served at / with the API on the same origin.
+COPY web ./web
 COPY build-scripts/fetch-ytdlp.js ./build-scripts/fetch-ytdlp.js
 # Standalone yt-dlp + deno into resources/bin (copied to LAS_YTDLP_DIR and kept up to date at runtime).
 RUN node build-scripts/fetch-ytdlp.js --platform linux \

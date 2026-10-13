@@ -29,6 +29,35 @@ const { assertPublicHttpUrl, safeDownloadName } = require('./security');
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.LAS_HOST || '0.0.0.0';
 const TOKENS = (process.env.LAS_API_TOKEN || '').split(',').map((t) => t.trim()).filter(Boolean);
+const WEB_DIR = (() => {
+  const d = path.resolve(process.env.LAS_WEB_DIR || path.join(__dirname, '..', 'web'));
+  try { return fs.statSync(path.join(d, 'index.html')).isFile() ? d : ''; } catch (_) { return ''; }
+})();
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml', '.onnx': 'application/octet-stream' };
+
+/** Static website (the LAS CONVERT web build). Returns true when it answered. */
+function serveStatic(req, res, pathname) {
+  if (!WEB_DIR || (req.method !== 'GET' && req.method !== 'HEAD') || pathname.startsWith('/api/')) return false;
+  let rel; try { rel = decodeURIComponent(pathname); } catch (_) { return false; }
+  if (rel.endsWith('/')) rel += 'index.html';
+  const file = path.resolve(WEB_DIR, '.' + rel);
+  if (!file.startsWith(WEB_DIR + path.sep)) return false;
+  let st; try { st = fs.statSync(file); } catch (_) { return false; }
+  if (!st.isFile()) return false;
+  const ext = path.extname(file).toLowerCase();
+  const html = ext === '.html';
+  res.writeHead(200, {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Content-Length': st.size,
+    'Cache-Control': html ? 'no-cache' : 'public, max-age=3600',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    ...(html ? { 'X-Frame-Options': 'SAMEORIGIN' } : {}),
+  });
+  if (req.method === 'HEAD') { res.end(); return true; }
+  fs.createReadStream(file).pipe(res);
+  return true;
+}
 const RATE = parseInt(process.env.LAS_RATE_PER_HOUR || '30', 10);
 const MAX_CONC = parseInt(process.env.LAS_MAX_MEDIA_DOWNLOADS || '2', 10);
 
@@ -41,8 +70,20 @@ function send(res, status, obj, extra = {}) {
   res.end(body);
 }
 
+// The website served by this server (LAS_WEB_DIR) calls the API from the same
+// origin without the app token; rate limits still apply. Browsers set
+// Sec-Fetch-Site themselves and pages can't fake it.
+function sameOriginWeb(req) {
+  if (!WEB_DIR) return false;
+  if (req.headers['sec-fetch-site'] === 'same-origin') return true;
+  const origin = req.headers.origin;
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  try { return !!origin && !!host && new URL(origin).host === host; } catch (_) { return false; }
+}
+
 function tokenOk(req, urlObj) {
   if (!TOKENS.length) return true; // dev only; startup warns
+  if (sameOriginWeb(req)) return true;
   const t = req.headers['x-las-token'] || urlObj.searchParams.get('token') || '';
   const tb = Buffer.from(String(t));
   return TOKENS.some((k) => { const kb = Buffer.from(k); return kb.length === tb.length && crypto.timingSafeEqual(kb, tb); });
@@ -85,6 +126,7 @@ async function handle(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, Content-Range, Accept-Ranges');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+  if (urlObj.pathname !== '/api/health' && serveStatic(req, res, urlObj.pathname)) return;
   if (urlObj.pathname === '/api/health' || urlObj.pathname === '/') return send(res, 200, { ok: true, service: 'las-public-server', jobs: true });
 
   // Job API: polling for status and Range requests for the file keep every

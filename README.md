@@ -38,3 +38,7 @@ Only download content you have the rights to. MIT licensed.
 - `SERVER_COOKIES`: set this as a **secret** env var. Its value is the full contents of a Netscape-format `cookies.txt` (use a throwaway account; the cookies can get it flagged). You can use `LAS_SERVER_COOKIES_FILE=/etc/secrets/cookies.txt` with a Render secret file instead.
 - `LAS_PROXY`: the proxy URL yt-dlp should use, for example `http://user:pass@host:port`. The run log redacts the credentials.
 - `LAS_MAX_AUDIO_DURATION_SEC`: the longest video that can still be downloaded as MP3 (default: the video cap or 4 h, whichever is larger). Longer videos are offered as MP3 only.
+
+## Website
+
+`web/` is the static LAS CONVERT web build (from the private app repo: `npm run build`, then `dist/` without `downloads/` and the Electron/Capacitor platform files). The server serves it at `/`. API calls from the same origin don't need `LAS_API_TOKEN`, but the per-IP rate limit (`LAS_RATE_PER_HOUR`) still applies. Conversions run in the visitor's browser with the single-thread ffmpeg.wasm core, so no COOP/COEP headers are needed. Set `LAS_WEB_DIR` to serve a different folder.
