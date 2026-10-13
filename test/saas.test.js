@@ -231,7 +231,7 @@ test('cloud transcription: off without GROQ_API_KEY, premium only, forwards to G
     return m.fetch(url, opts);
   };
   const body = () => Object.assign(Readable.from([Buffer.alloc(4000, 1)]), { url: '/api/transcribe?lang=en', headers: { authorization: `Bearer ${hsToken('jwt-secret', claims())}`, 'content-type': 'audio/wav' } });
-  const off = createSaas({ config: cfg(), fetch, now: () => NOW, storage: null });
+  const off = createSaas({ config: cfg({ groqKey: '' }), fetch, now: () => NOW, storage: null });
   assert.strictEqual((await off.routes['GET /api/transcribe/status'](req())).enabled, false);
   await assert.rejects(off.routes['POST /api/transcribe'](body()), (e) => e.code === 'stt_off');
   const s = createSaas({ config: cfg({ groqKey: 'gsk_test', groqModel: 'whisper-large-v3-turbo', groqBase: 'https://api.groq.com/openai/v1' }), fetch, now: () => NOW, storage: null });
@@ -258,4 +258,31 @@ test('desktop local downloads: login required, plan caps, shared daily quota', a
   await assert.rejects(call({ format: 'mp4', quality: 480 }), (e) => e.status === 429 && e.code === 'quota_exceeded');
   m.state.profile.plan = 'premium'; m.state.profile.plan_expires_at = new Date(NOW + 86400e3).toISOString(); m.state.usage = 0;
   assert.strictEqual((await call({ format: 'mp4', quality: 2160 })).maxHeight, 2160);
+});
+
+test('cloud translation: Yoruba -> English via large-v3 transcription + LLM, keeps source segments', async () => {
+  const { Readable } = require('stream');
+  const m = mockServices();
+  m.state.profile.plan = 'premium'; m.state.profile.plan_expires_at = '2026-11-01T00:00:00Z';
+  const calls = [];
+  const fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.endsWith('/audio/transcriptions')) {
+      calls.push({ u, model: opts.body.get('model'), lang: opts.body.get('language') });
+      return { ok: true, status: 200, json: async () => ({ segments: [{ start: 0, end: 3, text: ' E kaaro', no_speech_prob: 0.01, avg_logprob: -0.3, compression_ratio: 1 }, { start: 3, end: 6, text: ' Bawo ni', no_speech_prob: 0.01, avg_logprob: -0.3, compression_ratio: 1 }] }) };
+    }
+    if (u.endsWith('/chat/completions')) {
+      const b = JSON.parse(opts.body); calls.push({ u, model: b.model });
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ t: ['Good morning', 'How are you'] }) } }] }) };
+    }
+    return m.fetch(url, opts);
+  };
+  const s = createSaas({ config: cfg({ groqKey: 'gsk_test', groqBase: 'https://api.groq.com/openai/v1' }), fetch, now: () => NOW, storage: null });
+  const body = Object.assign(Readable.from([Buffer.alloc(4000, 1)]), { url: '/api/transcribe?lang=yo&target=en', headers: { authorization: `Bearer ${hsToken('jwt-secret', claims())}`, 'content-type': 'audio/wav' } });
+  const r = await s.routes['POST /api/transcribe'](body);
+  assert.deepStrictEqual(r.segments.map((x) => x.text), ['Good morning', 'How are you']);
+  assert.deepStrictEqual(r.sourceSegments.map((x) => x.text), ['E kaaro', 'Bawo ni']);
+  assert.strictEqual(r.segments[1].start, 3);
+  assert.strictEqual(calls[0].model, 'whisper-large-v3'); assert.strictEqual(calls[0].lang, 'yo');
+  assert.ok(calls[1].u.endsWith('/chat/completions'));
 });

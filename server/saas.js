@@ -38,6 +38,10 @@ function loadConfig() {
     groqKey: env('GROQ_API_KEY'),
     groqModel: env('GROQ_STT_MODEL', 'whisper-large-v3-turbo'),
     groqBase: env('GROQ_API_BASE', 'https://api.groq.com/openai/v1'),
+    // Speech -> English (/audio/translations) needs whisper-large-v3 (turbo has no translate task);
+    // large-v3 is also used to transcribe low-resource languages (Yoruba, Hausa, Igbo...).
+    groqLargeModel: env('GROQ_STT_LARGE_MODEL', 'whisper-large-v3'),
+    groqLlmModel: env('GROQ_LLM_MODEL', 'openai/gpt-oss-120b'),
     plans,
     prices: { // amounts in kobo (NGN x 100)
       monthly: { amount: int('LAS_PRICE_MONTHLY_KOBO', 150000), days: 30 },
@@ -385,32 +389,111 @@ function createSaas(deps = {}) {
    * The browser cuts long files into pieces and offsets the timestamps itself.
    * Returns { text, language, duration, segments:[{start,end,text}] }.
    */
-  async function transcribe(req) {
-    if (!cfg.groqKey) throw new HttpError(503, 'stt_off', 'Cloud transcription is not configured.');
+  async function premiumCaller(req) {
+    if (!cfg.groqKey) throw new HttpError(503, 'stt_off', 'Cloud speech is not configured.');
     const who = await identify(req);
     if (!who.user) throw new HttpError(401, 'login_required', 'Please log in.');
-    if (who.plan.key !== 'premium') throw new HttpError(402, 'premium_required', 'Cloud transcription is a Premium feature.');
-    const audio = await readBody(req, 24 * 1024 * 1024);
-    if (audio.length < 1000) throw new HttpError(400, 'bad_request', 'No audio received.');
-    const q = new URL(req.url, 'http://x').searchParams;
-    const lang = String(q.get('lang') || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
-    const type = /^audio\/[\w.+-]+$/.test(String(req.headers['content-type'] || '')) ? req.headers['content-type'] : 'audio/wav';
+    if (who.plan.key !== 'premium') throw new HttpError(402, 'premium_required', 'AI transcription and translation are Premium features.');
+    return who;
+  }
+
+  const LANG_NAMES = { en: 'English', yo: 'Yoruba', ha: 'Hausa', ig: 'Igbo', pcm: 'Nigerian Pidgin', fr: 'French', es: 'Spanish', de: 'German', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', pt: 'Portuguese', it: 'Italian', ru: 'Russian', sw: 'Swahili' };
+  // Whisper's large-v3 is clearly better than turbo on these.
+  const LOW_RESOURCE = new Set(['yo', 'ha', 'ig', 'sw', 'am', 'so', 'ln']);
+
+  async function groqAudio(endpoint, audio, type, fields) {
     const ext = { 'audio/flac': 'flac', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/webm': 'webm', 'audio/mp4': 'm4a' }[type] || 'wav';
     const form = new FormData();
     form.append('file', new Blob([audio], { type }), `audio.${ext}`);
-    form.append('model', cfg.groqModel);
-    form.append('response_format', 'verbose_json');
-    form.append('temperature', '0');
-    if (lang && lang !== 'auto') form.append('language', lang);
-    const r = await d.fetch(`${cfg.groqBase}/audio/transcriptions`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.groqKey}` }, body: form });
+    for (const [k, v] of Object.entries(fields)) if (v != null && v !== '') form.append(k, String(v));
+    const r = await d.fetch(`${cfg.groqBase}/audio/${endpoint}`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.groqKey}` }, body: form });
     const j = await r.json().catch(() => ({}));
-    if (r.status === 429) throw new HttpError(429, 'rate_limited', 'Cloud transcription is busy (provider rate limit). Try again shortly.');
-    if (!r.ok) throw new HttpError(502, 'stt_error', `Transcription provider error: ${(j.error && j.error.message) || r.status}`);
-    // Drop segments Whisper itself flags as non-speech or very unlikely (hallucinations on silence).
+    if (r.status === 429) throw new HttpError(429, 'rate_limited', 'The AI speech service is busy (rate limit). Try again in a minute.');
+    if (!r.ok) throw new HttpError(502, 'stt_error', `AI speech service error: ${(j.error && j.error.message) || r.status}`);
+    // Drop segments Whisper itself flags as non-speech or looping (hallucinations on silence/music).
     const segments = (j.segments || [])
-      .filter((s) => !(s.no_speech_prob > 0.6 && s.avg_logprob < -0.8) && !(s.compression_ratio > 2.6))
-      .map((s) => ({ start: s.start, end: s.end, text: String(s.text || '').trim() })).filter((s) => s.text);
-    return { success: true, text: segments.map((s) => s.text).join(' '), language: j.language || lang || null, duration: j.duration || null, segments };
+      .filter((x) => !(x.no_speech_prob > 0.6 && x.avg_logprob < -0.8) && !(x.compression_ratio > 2.6))
+      .map((x) => ({ start: x.start, end: x.end, text: String(x.text || '').trim() })).filter((x) => x.text);
+    return { segments, language: j.language || null, duration: j.duration || null };
+  }
+
+  /** Translate an array of short texts with the Groq LLM, keeping the 1:1 line order. */
+  async function llmTranslate(texts, source, target) {
+    const out = [];
+    const src = LANG_NAMES[source] || source || 'the source language';
+    const tgt = LANG_NAMES[target] || target || 'English';
+    for (let i = 0; i < texts.length; i += 40) {
+      const batch = texts.slice(i, i + 40);
+      const body = {
+        model: cfg.groqLlmModel, temperature: 0, response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: `You are a professional subtitle translator. Translate each line from ${src} to ${tgt}. The lines are consecutive speech-recognition subtitles, so use the neighbouring lines for context, keep names, keep the meaning natural and concise, and do not add explanations. The text comes from automatic speech recognition and can be noisy: tone marks and under-dots may be missing, words may be split or merged, and names/loanwords are spelled phonetically (for Yoruba e.g. "busi" = Bush, "nukilia" = nuclear, "koria ariwa" = North Korea). Reconstruct the most likely meaning, but never invent content that the line does not support; if part of a line is unintelligible, translate what you can. If a line is already in ${tgt}, keep it. Reply with JSON {"t": [..]} containing exactly ${batch.length} strings, one per input line, in the same order.` },
+          { role: 'user', content: JSON.stringify(batch.map((t, k) => `${k + 1}. ${t}`)) },
+        ],
+      };
+      let arr = null;
+      for (let attempt = 0; attempt < 2 && !arr; attempt++) {
+        const r = await d.fetch(`${cfg.groqBase}/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.groqKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 429) throw new HttpError(429, 'rate_limited', 'The AI translation service is busy (rate limit). Try again in a minute.');
+        if (!r.ok) throw new HttpError(502, 'translate_error', `AI translation error: ${(j.error && j.error.message) || r.status}`);
+        try {
+          const t = JSON.parse(j.choices[0].message.content).t;
+          if (Array.isArray(t) && t.length === batch.length) arr = t.map((x) => String(x || '').replace(/^\d+\.\s*/, '').trim());
+        } catch (_) { arr = null; }
+      }
+      if (!arr) throw new HttpError(502, 'translate_error', 'AI translation returned an unexpected answer. Please try again.');
+      out.push(...arr);
+    }
+    return out;
+  }
+
+  /**
+   * POST /api/transcribe?lang=yo&target=en&mode=asr|llm   body: one audio piece (<= 24 MB).
+   *  - no target (or target == lang): transcription (turbo; large-v3 for low-resource languages)
+   *  - target=en, mode=asr: Whisper large-v3 speech translation straight to English
+   *  - mode=llm (default for translations): large-v3 transcription in the spoken language,
+   *    then line-by-line LLM translation (keeps both texts, any target language)
+   * Returns { text, language, segments:[{start,end,text}], sourceSegments? }.
+   */
+  async function transcribe(req) {
+    await premiumCaller(req);
+    const audio = await readBody(req, 24 * 1024 * 1024);
+    if (audio.length < 1000) throw new HttpError(400, 'bad_request', 'No audio received.');
+    const q = new URL(req.url, 'http://x').searchParams;
+    const clean = (v) => String(v || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+    let lang = clean(q.get('lang')); if (lang === 'aut') lang = '';
+    const target = clean(q.get('target'));
+    const mode = q.get('mode') === 'asr' ? 'asr' : 'llm';
+    const type = /^audio\/[\w.+-]+$/.test(String(req.headers['content-type'] || '')) ? req.headers['content-type'] : 'audio/wav';
+    // Whisper has no Pidgin or Igbo code: Pidgin is transcribed as English, Igbo auto-detected.
+    const whisperLang = lang === 'pcm' ? 'en' : (lang === 'ig' ? '' : lang);
+    const translating = !!target && target !== lang;
+    if (!translating) {
+      const model = LOW_RESOURCE.has(lang) ? cfg.groqLargeModel : cfg.groqModel;
+      const r = await groqAudio('transcriptions', audio, type, { model, response_format: 'verbose_json', temperature: 0, language: whisperLang });
+      return { success: true, text: r.segments.map((x) => x.text).join(' '), language: r.language || lang || null, duration: r.duration, segments: r.segments, model };
+    }
+    if (mode === 'asr' && target === 'en') {
+      const r = await groqAudio('translations', audio, type, { model: cfg.groqLargeModel, response_format: 'verbose_json', temperature: 0 });
+      return { success: true, text: r.segments.map((x) => x.text).join(' '), language: 'en', sourceLanguage: lang || r.language, duration: r.duration, segments: r.segments, model: cfg.groqLargeModel };
+    }
+    const src = await groqAudio('transcriptions', audio, type, { model: cfg.groqLargeModel, response_format: 'verbose_json', temperature: 0, language: whisperLang });
+    const translated = src.segments.length ? await llmTranslate(src.segments.map((x) => x.text), lang || src.language, target) : [];
+    const segments = src.segments.map((x, i) => ({ start: x.start, end: x.end, text: translated[i] || '' })).filter((x) => x.text);
+    return { success: true, text: segments.map((x) => x.text).join(' '), language: target, sourceLanguage: lang || src.language, duration: src.duration, segments, sourceSegments: src.segments, model: `${cfg.groqLargeModel}+${cfg.groqLlmModel}` };
+  }
+
+  /** POST /api/translate { source, target, texts: [..] }  (Premium) -> { texts: [..] } */
+  async function translateText(req) {
+    await premiumCaller(req);
+    let body = {};
+    try { body = JSON.parse((await readBody(req, 512 * 1024)).toString() || '{}'); } catch (_) { throw new HttpError(400, 'bad_request', 'Invalid JSON'); }
+    const texts = Array.isArray(body.texts) ? body.texts.map((t) => String(t || '').slice(0, 2000)).slice(0, 2000) : [];
+    if (!texts.length) throw new HttpError(400, 'bad_request', 'Nothing to translate.');
+    const clean = (v) => String(v || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+    const target = clean(body.target) || 'en';
+    return { success: true, texts: await llmTranslate(texts, clean(body.source), target), model: cfg.groqLlmModel };
   }
 
   /**
@@ -438,6 +521,7 @@ function createSaas(deps = {}) {
     'POST /api/local-download': localDownload,
     'GET /api/transcribe/status': transcribeStatus,
     'POST /api/transcribe': transcribe,
+    'POST /api/translate': translateText,
     'GET /api/me': me,
     'GET /api/history': history,
     'POST /api/pay/initialize': payInitialize,
