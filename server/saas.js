@@ -422,8 +422,8 @@ function createSaas(deps = {}) {
     const out = [];
     const src = LANG_NAMES[source] || source || 'the source language';
     const tgt = LANG_NAMES[target] || target || 'English';
-    for (let i = 0; i < texts.length; i += 40) {
-      const batch = texts.slice(i, i + 40);
+    for (let i = 0; i < texts.length; i += 25) {
+      const batch = texts.slice(i, i + 25);
       const body = {
         model: cfg.groqLlmModel, temperature: 0, response_format: { type: 'json_object' },
         messages: [
@@ -431,17 +431,30 @@ function createSaas(deps = {}) {
           { role: 'user', content: JSON.stringify(batch.map((t, k) => `${k + 1}. ${t}`)) },
         ],
       };
-      let arr = null;
-      for (let attempt = 0; attempt < 2 && !arr; attempt++) {
-        const r = await d.fetch(`${cfg.groqBase}/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.groqKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      let arr = null; let lastErr = null;
+      for (let attempt = 0; attempt < 4 && !arr; attempt++) {
+        // attempt 0/1: main model, 2/3: smaller fallback model (also used when the main one is rate-limited)
+        const model = attempt < 2 ? cfg.groqLlmModel : (cfg.groqLlmFallback || 'openai/gpt-oss-20b');
+        const b = { ...body, model };
+        if (/gpt-oss/.test(model)) b.reasoning_effort = 'low';
+        if (attempt % 2 === 1) delete b.response_format; // JSON-mode validation failures: retry in free text
+        const r = await d.fetch(`${cfg.groqBase}/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.groqKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
         const j = await r.json().catch(() => ({}));
-        if (r.status === 429) throw new HttpError(429, 'rate_limited', 'The AI translation service is busy (rate limit). Try again in a minute.');
-        if (!r.ok) throw new HttpError(502, 'translate_error', `AI translation error: ${(j.error && j.error.message) || r.status}`);
+        if (r.status === 429) {
+          lastErr = new HttpError(429, 'rate_limited', 'The AI translation service is busy (rate limit). Try again in a minute.');
+          const wait = Math.min(20, Number(r.headers && r.headers.get && r.headers.get('retry-after')) || 6);
+          if (attempt < 3) await new Promise((res) => setTimeout(res, (d.sleepScale ?? 1) * wait * 1000));
+          continue;
+        }
+        if (!r.ok) { lastErr = new HttpError(502, 'translate_error', `AI translation error: ${(j.error && j.error.message) || r.status}`); continue; }
         try {
-          const t = JSON.parse(j.choices[0].message.content).t;
+          const c = String(j.choices[0].message.content || '');
+          const t = JSON.parse(c.slice(c.indexOf('{'), c.lastIndexOf('}') + 1)).t;
           if (Array.isArray(t) && t.length === batch.length) arr = t.map((x) => String(x || '').replace(/^\d+\.\s*/, '').trim());
+          else lastErr = new HttpError(502, 'translate_error', 'AI translation returned an unexpected answer. Please try again.');
         } catch (_) { arr = null; }
       }
+      if (!arr && lastErr) throw lastErr;
       if (!arr) throw new HttpError(502, 'translate_error', 'AI translation returned an unexpected answer. Please try again.');
       out.push(...arr);
     }
