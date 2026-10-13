@@ -34,6 +34,10 @@ function loadConfig() {
     serviceKey: env('SUPABASE_SERVICE_ROLE_KEY'),
     jwtSecret: env('SUPABASE_JWT_SECRET'), // legacy HS256 projects; new projects use JWKS (RS256/ES256)
     requireLogin: env('LAS_REQUIRE_LOGIN') === '1',
+    // Cloud speech-to-text (Groq Whisper). Off until GROQ_API_KEY is set; Premium only.
+    groqKey: env('GROQ_API_KEY'),
+    groqModel: env('GROQ_STT_MODEL', 'whisper-large-v3-turbo'),
+    groqBase: env('GROQ_API_BASE', 'https://api.groq.com/openai/v1'),
     plans,
     prices: { // amounts in kobo (NGN x 100)
       monthly: { amount: int('LAS_PRICE_MONTHLY_KOBO', 150000), days: 30 },
@@ -367,7 +371,51 @@ function createSaas(deps = {}) {
     return { success: true, sessionId: user.sessionId };
   }
 
+  /** Is cloud transcription available (and allowed for this caller)? */
+  async function transcribeStatus(req) {
+    let premium = false;
+    if (/^Bearer\s+/i.test(String(req.headers.authorization || ''))) {
+      try { premium = (await identify(req)).plan.key === 'premium'; } catch (_) { premium = false; }
+    }
+    return { success: true, enabled: !!cfg.groqKey, premium, model: cfg.groqKey ? cfg.groqModel : null, maxBytes: 24 * 1024 * 1024 };
+  }
+
+  /**
+   * POST /api/transcribe?lang=en   body: one audio piece (wav/flac/mp3/ogg/webm/m4a, <= 24 MB).
+   * The browser cuts long files into pieces and offsets the timestamps itself.
+   * Returns { text, language, duration, segments:[{start,end,text}] }.
+   */
+  async function transcribe(req) {
+    if (!cfg.groqKey) throw new HttpError(503, 'stt_off', 'Cloud transcription is not configured.');
+    const who = await identify(req);
+    if (!who.user) throw new HttpError(401, 'login_required', 'Please log in.');
+    if (who.plan.key !== 'premium') throw new HttpError(402, 'premium_required', 'Cloud transcription is a Premium feature.');
+    const audio = await readBody(req, 24 * 1024 * 1024);
+    if (audio.length < 1000) throw new HttpError(400, 'bad_request', 'No audio received.');
+    const q = new URL(req.url, 'http://x').searchParams;
+    const lang = String(q.get('lang') || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+    const type = /^audio\/[\w.+-]+$/.test(String(req.headers['content-type'] || '')) ? req.headers['content-type'] : 'audio/wav';
+    const ext = { 'audio/flac': 'flac', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/webm': 'webm', 'audio/mp4': 'm4a' }[type] || 'wav';
+    const form = new FormData();
+    form.append('file', new Blob([audio], { type }), `audio.${ext}`);
+    form.append('model', cfg.groqModel);
+    form.append('response_format', 'verbose_json');
+    form.append('temperature', '0');
+    if (lang && lang !== 'auto') form.append('language', lang);
+    const r = await d.fetch(`${cfg.groqBase}/audio/transcriptions`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.groqKey}` }, body: form });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 429) throw new HttpError(429, 'rate_limited', 'Cloud transcription is busy (provider rate limit). Try again shortly.');
+    if (!r.ok) throw new HttpError(502, 'stt_error', `Transcription provider error: ${(j.error && j.error.message) || r.status}`);
+    // Drop segments Whisper itself flags as non-speech or very unlikely (hallucinations on silence).
+    const segments = (j.segments || [])
+      .filter((s) => !(s.no_speech_prob > 0.6 && s.avg_logprob < -0.8) && !(s.compression_ratio > 2.6))
+      .map((s) => ({ start: s.start, end: s.end, text: String(s.text || '').trim() })).filter((s) => s.text);
+    return { success: true, text: segments.map((s) => s.text).join(' '), language: j.language || lang || null, duration: j.duration || null, segments };
+  }
+
   const routes = {
+    'GET /api/transcribe/status': transcribeStatus,
+    'POST /api/transcribe': transcribe,
     'GET /api/me': me,
     'GET /api/history': history,
     'POST /api/pay/initialize': payInitialize,

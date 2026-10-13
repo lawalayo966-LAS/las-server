@@ -216,3 +216,30 @@ test('single device: newest login wins; older session gets 401 signed_in_elsewhe
   // app-token / anonymous callers are unaffected
   assert.strictEqual((await s.identify(req())).user, null);
 });
+
+test('cloud transcription: off without GROQ_API_KEY, premium only, forwards to Groq and drops no-speech segments', async () => {
+  const { Readable } = require('stream');
+  const m = mockServices();
+  let groqCall = null;
+  const fetch = async (url, opts = {}) => {
+    if (String(url).startsWith('https://api.groq.com/')) {
+      groqCall = { url: String(url), auth: opts.headers.Authorization, model: opts.body.get('model'), lang: opts.body.get('language'), size: opts.body.get('file').size };
+      return { ok: true, status: 200, json: async () => ({ language: 'english', duration: 12, segments: [
+        { start: 0, end: 4, text: ' Hello there.', no_speech_prob: 0.01, avg_logprob: -0.2, compression_ratio: 1.1 },
+        { start: 5, end: 9, text: ' Thank you for watching.', no_speech_prob: 0.9, avg_logprob: -1.2, compression_ratio: 1.0 }] }) };
+    }
+    return m.fetch(url, opts);
+  };
+  const body = () => Object.assign(Readable.from([Buffer.alloc(4000, 1)]), { url: '/api/transcribe?lang=en', headers: { authorization: `Bearer ${hsToken('jwt-secret', claims())}`, 'content-type': 'audio/wav' } });
+  const off = createSaas({ config: cfg(), fetch, now: () => NOW, storage: null });
+  assert.strictEqual((await off.routes['GET /api/transcribe/status'](req())).enabled, false);
+  await assert.rejects(off.routes['POST /api/transcribe'](body()), (e) => e.code === 'stt_off');
+  const s = createSaas({ config: cfg({ groqKey: 'gsk_test', groqModel: 'whisper-large-v3-turbo', groqBase: 'https://api.groq.com/openai/v1' }), fetch, now: () => NOW, storage: null });
+  assert.strictEqual((await s.routes['GET /api/transcribe/status'](req())).enabled, true);
+  await assert.rejects(s.routes['POST /api/transcribe'](body()), (e) => e.code === 'premium_required');
+  m.state.profile.plan = 'premium'; m.state.profile.plan_expires_at = '2026-11-01T00:00:00Z';
+  const r = await s.routes['POST /api/transcribe'](body());
+  assert.deepStrictEqual(r.segments, [{ start: 0, end: 4, text: 'Hello there.' }]);
+  assert.strictEqual(groqCall.auth, 'Bearer gsk_test'); assert.strictEqual(groqCall.lang, 'en'); assert.strictEqual(groqCall.size, 4000);
+  assert.strictEqual(groqCall.url, 'https://api.groq.com/openai/v1/audio/transcriptions');
+});
