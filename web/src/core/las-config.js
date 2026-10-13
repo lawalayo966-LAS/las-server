@@ -6,4 +6,4 @@
  */
 window.LAS_BUILTIN_SERVER = '__LAS_BUILTIN_SERVER__';
 window.LAS_BUILTIN_TOKEN = '__LAS_BUILTIN_TOKEN__';
-window.LAS_APP_VERSION = '1.8.0';
+window.LAS_APP_VERSION = '1.9.0';

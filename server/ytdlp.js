@@ -367,12 +367,12 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video')
     if (!isBotError(r.err) && !cookieFail && !streamBlocked) break;
   }
   const reason = lastErrorLine(last.err, last.code);
+  const target = args[args.length - 1];
+  const fb = friendlyFacebookError(String(target), `${reason}\n${failures.join('\n')}`);
+  if (fb) throw new YtDlpError(fb, 'fb_unavailable');
   if (isBotError(failures.join('\n'))) {
     throw new YtDlpError(`The site needs you to be signed in or confirm you're not a bot (${reason}). Add cookies (from your browser or a cookies.txt) in Settings and try again.`, 'bot_check');
   }
-  const target = args[args.length - 1];
-  const fb = friendlyFacebookError(String(target), reason);
-  if (fb) throw new YtDlpError(fb, 'fb_unavailable');
   throw new YtDlpError(reason, /Unsupported URL/i.test(reason) ? 'unsupported' : 'ytdlp_failed');
 }
 
@@ -391,20 +391,32 @@ async function runYtDlp(args, timeoutMs = 60000, onLine, signal) {
 const SHORT_LINK = /^https:\/\/(?:fb\.watch\/|(?:www\.|m\.|web\.)?facebook\.com\/share\/|vm\.tiktok\.com\/|vt\.tiktok\.com\/|(?:www\.)?tiktok\.com\/t\/|t\.co\/)/i;
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36';
 
+const FB_CRAWLER_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
+function redirectOf(url, ua) {
+  return new Promise((resolve) => {
+    const req = https.request(url, { method: 'GET', headers: { 'User-Agent': ua, Accept: 'text/html' }, timeout: 15000 }, (res) => {
+      res.resume();
+      resolve([301, 302, 303, 307, 308].includes(res.statusCode) ? res.headers.location : null);
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
 /** Follow redirects of share / short links (fb.watch, facebook.com/share/..., vm.tiktok.com, t.co). */
 async function resolveShareUrl(url) {
   if (!SHORT_LINK.test(url)) return resolveFacebookPost(url);
   let cur = url;
+  // Facebook answers /share/p/ (post) links from a desktop browser UA with
+  // HTTP 400 and no redirect; its own link-preview crawler UA gets the 302.
+  let ua = BROWSER_UA;
   for (let i = 0; i < 6; i++) {
-    const loc = await new Promise((resolve) => {
-      const req = https.request(cur, { method: 'GET', headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html' }, timeout: 15000 }, (res) => {
-        res.resume();
-        resolve([301, 302, 303, 307, 308].includes(res.statusCode) ? res.headers.location : null);
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-      req.end();
-    });
+    let loc = null;
+    for (const tryUa of (i === 0 && /facebook\.com|fb\.watch/i.test(cur) ? [ua, FB_CRAWLER_UA] : [ua])) {
+      loc = await redirectOf(cur, tryUa);
+      if (loc) { ua = tryUa; break; }
+    }
     if (!loc) break;
     const next = new URL(loc, cur).toString();
     if (!/^https:/i.test(next) || /\/login|checkpoint/i.test(next)) break; // keep original if it bounces to login

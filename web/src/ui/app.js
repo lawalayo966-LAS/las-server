@@ -1848,7 +1848,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 18. Settings
     initSettings() {
       const v = document.getElementById('about-version');
-      const ver = (window.LAS_APP_VERSION && !String(window.LAS_APP_VERSION).startsWith('__')) ? window.LAS_APP_VERSION : '1.8.0';
+      const ver = (window.LAS_APP_VERSION && !String(window.LAS_APP_VERSION).startsWith('__')) ? window.LAS_APP_VERSION : '1.9.0';
       if (v) v.textContent = `v${ver}`;
     },
 
