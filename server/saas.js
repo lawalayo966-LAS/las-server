@@ -413,7 +413,29 @@ function createSaas(deps = {}) {
     return { success: true, text: segments.map((s) => s.text).join(' '), language: j.language || lang || null, duration: j.duration || null, segments };
   }
 
+  /**
+   * POST /api/local-download  { format: 'mp4'|'mp3', quality, bitrate }
+   * The PC app downloads YouTube etc. with its own local yt-dlp; it calls this
+   * first so the download needs a login and counts toward the same daily quota
+   * and plan caps as the website. Returns the caps the app must apply.
+   */
+  async function localDownload(req) {
+    const who = await identify(req);
+    if (!who.user) throw new HttpError(401, 'login_required', 'Please log in to download.');
+    let body = {};
+    try { body = JSON.parse((await readBody(req, 16384)).toString() || '{}'); } catch (_) { throw new HttpError(400, 'bad_request', 'Invalid JSON'); }
+    const format = body.format === 'mp3' ? 'mp3' : 'mp4';
+    const quality = parseInt(body.quality, 10) || 720;
+    const bitrate = parseInt(body.bitrate, 10) || 192;
+    const p = who.plan;
+    if (format === 'mp4' && quality > p.maxHeight) throw new HttpError(402, 'premium_required', `${quality}p is a Premium feature (your plan allows up to ${p.maxHeight}p).`);
+    checkRequest(who, { format, quality, bitrate });
+    const used = await consume(who, null);
+    return { success: true, plan: p.key, used, limit: p.dailyDownloads, maxHeight: p.maxHeight, maxBitrate: p.maxBitrate, maxVideoSec: p.maxVideoSec, maxAudioSec: p.maxAudioSec };
+  }
+
   const routes = {
+    'POST /api/local-download': localDownload,
     'GET /api/transcribe/status': transcribeStatus,
     'POST /api/transcribe': transcribe,
     'GET /api/me': me,

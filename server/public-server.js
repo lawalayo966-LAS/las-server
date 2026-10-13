@@ -7,6 +7,9 @@
 //   PORT                     listen port (default 8080)
 //   LAS_HOST                 bind address (default 0.0.0.0)
 //   LAS_API_TOKEN            required token (header X-LAS-Token or ?token=); comma-separated list allowed
+//                            DEPRECATED for apps >= 2.0.0 (they send the user's Supabase JWT). Still accepted
+//                            during the transition so older app versions keep working; to be removed later
+//                            (the embedded token is extractable from the app binaries).
 //   LAS_RATE_PER_HOUR        media requests per client IP per hour (default 30)
 //   LAS_MAX_MEDIA_DOWNLOADS  concurrent downloads (default 2)
 //   LAS_MAX_DURATION_SEC     reject longer videos (default 1800 = 30 min)

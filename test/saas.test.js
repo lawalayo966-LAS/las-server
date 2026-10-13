@@ -243,3 +243,19 @@ test('cloud transcription: off without GROQ_API_KEY, premium only, forwards to G
   assert.strictEqual(groqCall.auth, 'Bearer gsk_test'); assert.strictEqual(groqCall.lang, 'en'); assert.strictEqual(groqCall.size, 4000);
   assert.strictEqual(groqCall.url, 'https://api.groq.com/openai/v1/audio/transcriptions');
 });
+
+test('desktop local downloads: login required, plan caps, shared daily quota', async () => {
+  const m = mockServices();
+  const s = createSaas({ config: cfg(), fetch: m.fetch, now: () => NOW, storage: null });
+  const t = esToken(claims());
+  const call = (body, h = { authorization: `Bearer ${t}` }) => s.routes['POST /api/local-download'](bodyReq(h, JSON.stringify(body)));
+  await assert.rejects(call({ format: 'mp4', quality: 720 }, {}), (e) => e.status === 401 && e.code === 'login_required');
+  await assert.rejects(call({ format: 'mp4', quality: 1080 }), (e) => e.status === 402 && e.code === 'premium_required');
+  await assert.rejects(call({ format: 'mp3', bitrate: 320 }), (e) => e.status === 402);
+  const r = await call({ format: 'mp4', quality: 720 });
+  assert.strictEqual(r.used, 1); assert.strictEqual(r.maxHeight, 720); assert.strictEqual(r.limit, 10);
+  for (let i = 1; i < 10; i++) await call({ format: 'mp3', bitrate: 192 });
+  await assert.rejects(call({ format: 'mp4', quality: 480 }), (e) => e.status === 429 && e.code === 'quota_exceeded');
+  m.state.profile.plan = 'premium'; m.state.profile.plan_expires_at = new Date(NOW + 86400e3).toISOString(); m.state.usage = 0;
+  assert.strictEqual((await call({ format: 'mp4', quality: 2160 })).maxHeight, 2160);
+});
