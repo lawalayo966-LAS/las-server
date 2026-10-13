@@ -183,3 +183,36 @@ test('free plan video cap uses the short side (reels 720x1280 count as 720p)', (
   assert.ok(!/\/b$|\/w$/.test(sel), 'no uncapped fallback');
   assert.strictEqual(formatArgs('video', 720, 192, '')[1], 'bv*[height<=720]+ba/b[height<=720]/b'); // apps / premium: unchanged
 });
+
+test('single device: newest login wins; older session gets 401 signed_in_elsewhere', async () => {
+  const m = mockServices();
+  m.state.claimable = new Set(['sess-A', 'sess-B']);
+  const base = m.fetch;
+  const fetch = async (url, opts = {}) => {
+    const u = new URL(url);
+    if (u.pathname === '/rest/v1/rpc/claim_session') {
+      const b = JSON.parse(opts.body);
+      if (!m.state.claimable.has(b.p_session)) return { ok: true, status: 200, json: async () => false, text: async () => 'false' };
+      m.state.profile.active_session_id = b.p_session; m.state.claimable = new Set([b.p_session]);
+      return { ok: true, status: 200, json: async () => true, text: async () => 'true' };
+    }
+    return base(url, opts);
+  };
+  const s = createSaas({ config: cfg(), fetch, now: () => NOW, storage: null });
+  const tA = esToken(claims({ session_id: 'sess-A' })); const tB = esToken(claims({ session_id: 'sess-B' }));
+  const call = (route, t) => s.routes[route](bodyReq({ authorization: `Bearer ${t}` }, ''));
+  // before any claim (existing users / old tokens): allowed
+  assert.strictEqual((await call('GET /api/me', tA)).user.id, 'user-1');
+  assert.strictEqual((await call('POST /api/session/claim', tA)).sessionId, 'sess-A');
+  assert.strictEqual((await call('GET /api/me', tA)).success, true);
+  m.state.claimable.add('sess-B'); // device B logs in (new session)
+  await call('POST /api/session/claim', tB);
+  await assert.rejects(call('GET /api/me', tA), (e) => e.status === 401 && e.code === 'signed_in_elsewhere');
+  await assert.rejects(s.userId(req({ authorization: `Bearer ${tA}` })), (e) => e.code === 'signed_in_elsewhere');
+  assert.strictEqual((await call('GET /api/me', tB)).success, true);
+  // A's session was revoked: it cannot take the account back
+  await assert.rejects(call('POST /api/session/claim', tA), (e) => e.code === 'signed_in_elsewhere');
+  assert.strictEqual(m.state.profile.active_session_id, 'sess-B');
+  // app-token / anonymous callers are unaffected
+  assert.strictEqual((await s.identify(req())).user, null);
+});

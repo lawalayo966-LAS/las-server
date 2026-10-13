@@ -98,7 +98,7 @@ function createAuth(cfg, deps) {
     if (payload.aud && payload.aud !== 'authenticated' && !(Array.isArray(payload.aud) && payload.aud.includes('authenticated'))) throw new HttpError(401, 'bad_token', 'Please log in again.');
     if (payload.iss && payload.iss !== `${cfg.supabaseUrl}/auth/v1`) throw new HttpError(401, 'bad_token', 'Please log in again.');
     if (!payload.sub || payload.role === 'anon') throw new HttpError(401, 'bad_token', 'Please log in.');
-    return { id: payload.sub, email: payload.email || '', role: payload.role };
+    return { id: payload.sub, email: payload.email || '', role: payload.role, sessionId: payload.session_id || null };
   }
   return { verify };
 }
@@ -113,7 +113,8 @@ function createDb(cfg, deps) {
     return text ? JSON.parse(text) : null;
   }
   return {
-    async profile(id) { const rows = await call('GET', `profiles?id=eq.${encodeURIComponent(id)}&select=id,email,plan,plan_expires_at`); return rows && rows[0] || null; },
+    async profile(id) { const rows = await call('GET', `profiles?id=eq.${encodeURIComponent(id)}&select=id,email,plan,plan_expires_at,active_session_id`); return rows && rows[0] || null; },
+    async claimSession(userId, sessionId) { return call('POST', 'rpc/claim_session', { p_user: userId, p_session: sessionId }); },
     async consumeDownload(userId, limit) { return call('POST', 'rpc/consume_download', { p_user: userId, p_limit: limit }); },
     async usageToday(userId) { const v = await call('POST', 'rpc/usage_today', { p_user: userId }); return Number(v) || 0; },
     async addDownload(row) { return call('POST', 'downloads', row, 'return=minimal'); },
@@ -174,13 +175,29 @@ function createSaas(deps = {}) {
   const storage = deps.storage !== undefined ? deps.storage : createR2Storage(cfg.r2);
   const anonDaily = new Map(); // ip|day -> count (users who aren't logged in: apps / old site)
 
+  /**
+   * One active device per account (newest login wins): a token whose session is not
+   * the profile's active_session_id was signed out by a newer login elsewhere.
+   * No active session recorded yet (or no session_id claim) -> allowed.
+   */
+  function assertActive(user, profile) {
+    if (profile && profile.active_session_id && user.sessionId && profile.active_session_id !== user.sessionId) {
+      throw new HttpError(401, 'signed_in_elsewhere', 'Your account was signed in on another device.');
+    }
+  }
+  async function verifyActive(token) {
+    const user = await auth.verify(token);
+    const profile = await db.profile(user.id);
+    assertActive(user, profile);
+    return { user, profile };
+  }
+
   /** Who is calling? A Supabase user (Bearer), or an anonymous free caller (app token / same-origin). */
   async function identify(req) {
     const h = String(req.headers.authorization || '');
     const m = /^Bearer\s+(.+)$/i.exec(h);
     if (m) {
-      const user = await auth.verify(m[1].trim());
-      const profile = await db.profile(user.id);
+      const { user, profile } = await verifyActive(m[1].trim());
       return { user, profile, plan: effectivePlan(cfg, profile, d.now()) };
     }
     if (cfg.requireLogin) throw new HttpError(401, 'login_required', 'Please log in to download.');
@@ -325,7 +342,7 @@ function createSaas(deps = {}) {
     if (!cfg.paystackSecret) throw new HttpError(503, 'payments_off', 'Payments are not configured yet.');
     const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
     if (!m) throw new HttpError(401, 'login_required', 'Please log in.');
-    const user = await auth.verify(m[1].trim());
+    const { user } = await verifyActive(m[1].trim());
     let ref = new URL(req.url, 'http://x').searchParams.get('reference') || '';
     if (!ref) { try { ref = String(JSON.parse((await readBody(req, 16384)).toString() || '{}').reference || ''); } catch (_) {} }
     if (!/^[A-Za-z0-9_.=-]{6,100}$/.test(ref)) throw new HttpError(400, 'bad_request', 'Missing payment reference.');
@@ -335,7 +352,19 @@ function createSaas(deps = {}) {
   /** Light identity check for polling: user id from a valid Bearer token, else null. */
   async function userId(req) {
     const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
-    return m ? (await auth.verify(m[1].trim())).id : null;
+    return m ? (await verifyActive(m[1].trim())).user.id : null;
+  }
+
+  /** POST /api/session/claim: called right after a login; makes this session the only active one. */
+  async function sessionClaim(req) {
+    const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
+    if (!m) throw new HttpError(401, 'login_required', 'Please log in.');
+    const user = await auth.verify(m[1].trim());
+    if (!user.sessionId) throw new HttpError(400, 'no_session', 'This token has no session.');
+    const r = await db.claimSession(user.id, user.sessionId);
+    const ok = Array.isArray(r) ? !!r[0] : !!r;
+    if (!ok) throw new HttpError(401, 'signed_in_elsewhere', 'Your account was signed in on another device.');
+    return { success: true, sessionId: user.sessionId };
   }
 
   const routes = {
@@ -344,6 +373,7 @@ function createSaas(deps = {}) {
     'POST /api/pay/initialize': payInitialize,
     'POST /api/pay/webhook': payWebhook,
     'POST /api/pay/verify': payVerify,
+    'POST /api/session/claim': sessionClaim,
   };
   return { enabled: true, cfg, identify, userId, checkRequest, consume, afterJob, routes, storage, HttpError };
 }
