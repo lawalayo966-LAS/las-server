@@ -120,6 +120,7 @@ function createDb(cfg, deps) {
     async history(userId, limit = 50) { return call('GET', `downloads?user_id=eq.${encodeURIComponent(userId)}&order=created_at.desc&limit=${limit}&select=id,source_url,title,format,quality,size_bytes,r2_key,expires_at,created_at`); },
     async paymentByRef(ref) { const rows = await call('GET', `payments?reference=eq.${encodeURIComponent(ref)}&select=*`); return rows && rows[0] || null; },
     async addPayment(row) { return call('POST', 'payments', row, 'return=minimal'); },
+    async claimPayment(ref, patch) { const rows = await call('PATCH', `payments?reference=eq.${encodeURIComponent(ref)}&status=neq.success`, patch, 'return=representation'); return Array.isArray(rows) && rows.length > 0; },
     async updatePayment(ref, patch) { return call('PATCH', `payments?reference=eq.${encodeURIComponent(ref)}`, patch, 'return=minimal'); },
     async setPlan(userId, plan, expiresAt) { return call('PATCH', `profiles?id=eq.${encodeURIComponent(userId)}`, { plan, plan_expires_at: expiresAt, updated_at: new Date(deps.now()).toISOString() }, 'return=minimal'); },
   };
@@ -288,27 +289,47 @@ function createSaas(deps = {}) {
     let evt; try { evt = JSON.parse(raw.toString()); } catch (_) { throw new HttpError(400, 'bad_request', 'Invalid JSON'); }
     if (evt.event !== 'charge.success') return { success: true, ignored: evt.event };
     const ref = evt.data && evt.data.reference;
+    return applyPayment(ref, 'webhook');
+  }
+
+  /** Verify a reference with Paystack and grant the plan once (shared by webhook + callback verify). */
+  async function applyPayment(ref, src, userIdMustMatch) {
     const pay = ref && await db.paymentByRef(ref);
-    if (!pay) { d.log(`webhook: unknown reference ${ref}`); return { success: true, ignored: 'unknown_reference' }; }
+    if (!pay) { d.log(`${src}: unknown reference ${ref}`); if (userIdMustMatch) throw new HttpError(404, 'not_found', 'Payment not found.'); return { success: true, ignored: 'unknown_reference' }; }
+    if (userIdMustMatch && pay.user_id !== userIdMustMatch) throw new HttpError(404, 'not_found', 'Payment not found.');
     if (pay.status === 'success') return { success: true, duplicate: true };
-    // Don't trust the webhook body alone: ask Paystack for the transaction.
+    // Don't trust the client/webhook body alone: ask Paystack for the transaction.
     const vr = await d.fetch(`${cfg.paystackBase}/transaction/verify/${encodeURIComponent(ref)}`, { headers: { Authorization: `Bearer ${cfg.paystackSecret}` } });
     const vj = await vr.json().catch(() => ({}));
     const tx = vj && vj.data;
     if (!vr.ok || !tx || tx.status !== 'success' || Number(tx.amount) < Number(pay.amount) || String(tx.currency).toUpperCase() !== String(pay.currency).toUpperCase()) {
-      await db.updatePayment(ref, { status: 'failed', raw: tx || null });
-      d.log(`webhook: verification failed for ${ref}`);
-      return { success: true, ignored: 'verification_failed' };
+      const pending = tx && ['ongoing', 'pending', 'processing', 'queued'].includes(tx.status);
+      if (tx && !pending && tx.status !== 'abandoned') await db.updatePayment(ref, { status: 'failed', raw: tx });
+      d.log(`${src}: verification failed for ${ref} (${tx && tx.status})`);
+      return { success: true, ignored: 'verification_failed', status: tx && tx.status };
     }
-    const profile = await db.profile(pay.user_id);
     const now = d.now();
+    // Atomically claim the payment so concurrent webhook + verify grant only once.
+    if (!(await db.claimPayment(ref, { status: 'success', paid_at: new Date(now).toISOString(), raw: tx }))) return { success: true, duplicate: true };
+    const profile = await db.profile(pay.user_id);
     const base = profile && profile.plan === 'premium' && profile.plan_expires_at && Date.parse(profile.plan_expires_at) > now ? Date.parse(profile.plan_expires_at) : now;
     const days = (cfg.prices[pay.plan_interval] || cfg.prices.monthly).days;
     const expires = new Date(base + days * 86400e3).toISOString();
-    await db.updatePayment(ref, { status: 'success', paid_at: new Date(now).toISOString(), raw: tx });
     await db.setPlan(pay.user_id, 'premium', expires);
-    d.log(`webhook: ${pay.user_id} premium until ${expires} (${ref})`);
+    d.log(`${src}: ${pay.user_id} premium until ${expires} (${ref})`);
     return { success: true, plan: 'premium', expiresAt: expires };
+  }
+
+  /** Callback fallback: logged-in user confirms their own reference (?reference= / ?trxref=). */
+  async function payVerify(req) {
+    if (!cfg.paystackSecret) throw new HttpError(503, 'payments_off', 'Payments are not configured yet.');
+    const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
+    if (!m) throw new HttpError(401, 'login_required', 'Please log in.');
+    const user = await auth.verify(m[1].trim());
+    let ref = new URL(req.url, 'http://x').searchParams.get('reference') || '';
+    if (!ref) { try { ref = String(JSON.parse((await readBody(req, 16384)).toString() || '{}').reference || ''); } catch (_) {} }
+    if (!/^[A-Za-z0-9_.=-]{6,100}$/.test(ref)) throw new HttpError(400, 'bad_request', 'Missing payment reference.');
+    return applyPayment(ref, 'verify', user.id);
   }
 
   /** Light identity check for polling: user id from a valid Bearer token, else null. */
@@ -322,6 +343,7 @@ function createSaas(deps = {}) {
     'GET /api/history': history,
     'POST /api/pay/initialize': payInitialize,
     'POST /api/pay/webhook': payWebhook,
+    'POST /api/pay/verify': payVerify,
   };
   return { enabled: true, cfg, identify, userId, checkRequest, consume, afterJob, routes, storage, HttpError };
 }

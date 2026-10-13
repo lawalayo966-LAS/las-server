@@ -34,7 +34,7 @@ function mockServices({ profile = { id: 'user-1', email: 'a@b.c', plan: 'free', 
     if (u.pathname === '/rest/v1/downloads' && method === 'POST') { state.downloads.push(body); return json(201); }
     if (u.pathname === '/rest/v1/payments' && method === 'POST') { state.payments.set(body.reference, { ...body }); return json(201); }
     if (u.pathname === '/rest/v1/payments' && method === 'GET') { const p = state.payments.get(u.searchParams.get('reference').slice(3)); return json(200, p ? [p] : []); }
-    if (u.pathname === '/rest/v1/payments' && method === 'PATCH') { Object.assign(state.payments.get(u.searchParams.get('reference').slice(3)), body); return json(204); }
+    if (u.pathname === '/rest/v1/payments' && method === 'PATCH') { const p = state.payments.get(u.searchParams.get('reference').slice(3)); const st = u.searchParams.get('status'); if (!p || (st && st.startsWith('neq.') && p.status === st.slice(4))) return json(200, []); Object.assign(p, body); return json(200, [p]); }
     if (u.pathname === '/transaction/initialize') { assert.match(opts.headers.Authorization, /^Bearer sk_test_/); return json(200, { status: true, data: { authorization_url: 'https://checkout.paystack.com/abc', access_code: 'abc', reference: body.reference } }); }
     if (u.pathname.startsWith('/transaction/verify/')) return json(200, { status: true, data: tx || { status: 'success', amount: 150000, currency: 'NGN' } });
     return json(404, { message: `unmocked ${method} ${u.pathname}` });
