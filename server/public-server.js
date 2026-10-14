@@ -1,7 +1,7 @@
 // server/public-server.js
 //
 // Hosted ("public") LAS CONVERT download server for the mobile app.
-// Only exposes:  GET /api/health, GET /api/media-info, GET /api/media-download
+// Only exposes:  GET /health, GET /api/health, GET /api/media-info, GET /api/media-download
 //
 // Environment (all optional except LAS_API_TOKEN in production):
 //   PORT                     listen port (default 8080)
@@ -149,6 +149,8 @@ async function handle(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, Content-Range, Accept-Ranges');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+  // Fast health checks (Render + keep-alive cron): no auth, no DB, no disk.
+  if (urlObj.pathname === '/health' || urlObj.pathname === '/healthz') { res.setHeader('Cache-Control', 'no-store'); return send(res, 200, { ok: true }); }
   if (urlObj.pathname !== '/api/health' && serveStatic(req, res, urlObj.pathname)) return;
   if (urlObj.pathname === '/api/health' || urlObj.pathname === '/') return send(res, 200, { ok: true, service: 'las-public-server', jobs: true });
 
