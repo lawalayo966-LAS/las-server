@@ -16,17 +16,23 @@ const outDir = path.join(__dirname, '..', 'resources', 'bin');
 fs.mkdirSync(outDir, { recursive: true });
 const dest = path.join(outDir, outName);
 
+let attempt = 0;
+function retry(why) {
+  if (++attempt > 6) { console.error(why + ' (giving up)'); process.exit(1); }
+  console.error(why + ` - retry ${attempt}/6`);
+  setTimeout(() => get(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`), 3000 * attempt);
+}
 function get(url, n = 6) {
   https.get(url, { headers: { 'User-Agent': 'LAS-CONVERT-build' } }, (res) => {
     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && n > 0) {
       res.resume();
       return get(new URL(res.headers.location, url).toString(), n - 1);
     }
-    if (res.statusCode !== 200) { console.error(`HTTP ${res.statusCode} for ${url}`); process.exit(1); }
+    if (res.statusCode !== 200) { res.resume(); return retry(`HTTP ${res.statusCode} for ${url}`); }
     const out = fs.createWriteStream(dest, { mode: 0o755 });
     res.pipe(out);
     out.on('finish', () => out.close(() => console.log(`yt-dlp (${asset}) -> ${dest} (${fs.statSync(dest).size} bytes)`)));
-  }).on('error', (e) => { console.error(e.message); process.exit(1); });
+  }).on('error', (e) => retry(e.message));
 }
 get(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`);
 
