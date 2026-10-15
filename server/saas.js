@@ -2,7 +2,7 @@
 /**
  * LAS Converter SaaS layer for the public server: Supabase auth (JWT), plans
  * and quotas (Supabase tables), Cloudflare R2 cloud copies (S3 API, signed
- * links) and Paystack payments (initialize + signed webhook).
+ * links) and Paystack (+ optional Bachs, flag BACHS_ENABLED) payments (initialize + signed webhook).
  *
  * Everything is off unless SUPABASE_URL is set, so the current public site
  * and the apps keep working until the switch. No dependency is loaded in that
@@ -51,6 +51,13 @@ function loadConfig() {
     paystackSecret: env('PAYSTACK_SECRET_KEY'),
     paystackBase: env('PAYSTACK_API_BASE', 'https://api.paystack.co').replace(/\/+$/, ''),
     payCallbackUrl: env('LAS_PAY_CALLBACK_URL'),
+    // Bachs (second payment option). Hidden/disabled unless BACHS_ENABLED=1 and BACHS_API_KEY is set.
+    bachsEnabled: ['1', 'true', 'yes', 'on'].includes(env('BACHS_ENABLED').toLowerCase()),
+    bachsKey: env('BACHS_API_KEY'),
+    bachsWebhookSecret: env('BACHS_WEBHOOK_SECRET'),
+    bachsBase: bachsBaseUrl(env('BACHS_API_KEY'), env('BACHS_ENV'), env('BACHS_API_BASE')),
+    bachsSuccessUrl: env('LAS_BACHS_SUCCESS_URL', 'https://lasconverter.lasgconcept.com/account'),
+    bachsCancelUrl: env('LAS_BACHS_CANCEL_URL', 'https://lasconverter.lasgconcept.com/account'),
     r2: {
       accountId: env('R2_ACCOUNT_ID'), accessKeyId: env('R2_ACCESS_KEY_ID'), secretAccessKey: env('R2_SECRET_ACCESS_KEY'),
       bucket: env('R2_BUCKET'), endpoint: env('R2_ENDPOINT'), // R2_ENDPOINT overrides https://<account>.r2.cloudflarestorage.com (tests)
@@ -171,6 +178,60 @@ function paystackSignatureOk(secret, rawBody, signature) {
   const mac = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
   const a = Buffer.from(mac); const b = Buffer.from(String(signature));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+
+// ------------------------------------------------------------------ Bachs
+/** Base URL: BACHS_API_BASE override > BACHS_ENV (sandbox|live) > key prefix (sk_sandbox_ / sk_live_). Defaults to sandbox (never real money by accident). */
+function bachsBaseUrl(key, bachsEnv, override) {
+  if (override) return String(override).replace(/\/+$/, '');
+  const e = String(bachsEnv || '').toLowerCase();
+  if (e === 'live' || e === 'production' || e === 'prod') return 'https://api.bachs.io';
+  if (e === 'sandbox' || e === 'test') return 'https://sandbox-api.bachs.io';
+  return /^sk_live_/.test(String(key || '')) ? 'https://api.bachs.io' : 'https://sandbox-api.bachs.io';
+}
+
+function safeEqualHex(a, b) {
+  const x = Buffer.from(String(a)); const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
+/**
+ * Verify a Bachs webhook (https://docs.bachs.io/guides/webhooks/overview).
+ * signature = hex(HMAC-SHA256(secret, `${timestamp}.${rawBody}`)); headers X-Bachs-Timestamp + X-Bachs-Signature,
+ * or X-Bachs-Signature-V2 = `t=<ts>,v1=<sig>[,v1=<sig2>]` (several v1 values while a secret is being rotated).
+ * Deliveries older/newer than `toleranceSec` (default 300 s) are rejected as replays.
+ */
+function bachsSignatureOk(secret, rawBody, headers, nowMs = Date.now(), toleranceSec = 300) {
+  if (!secret || !headers) return false;
+  const h = (n) => { const v = headers[n]; return Array.isArray(v) ? v[0] : v; };
+  const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody), 'utf8');
+  let ts; let sigs = [];
+  const v2 = h('x-bachs-signature-v2');
+  if (v2) {
+    for (const part of String(v2).split(',')) {
+      const i = part.indexOf('='); if (i < 1) continue;
+      const k = part.slice(0, i).trim(); const v = part.slice(i + 1).trim();
+      if (k === 't') ts = v; else if (k === 'v1') sigs.push(v);
+    }
+  }
+  if (!sigs.length) { ts = h('x-bachs-timestamp'); const s1 = h('x-bachs-signature'); sigs = s1 ? [String(s1).trim()] : []; }
+  if (!sigs.length || !/^\d{1,12}$/.test(String(ts || ''))) return false;
+  const t = parseInt(ts, 10);
+  if (Math.abs(nowMs / 1000 - t) > toleranceSec) return false;
+  const expected = crypto.createHmac('sha256', secret).update(Buffer.concat([Buffer.from(`${t}.`, 'utf8'), body])).digest('hex');
+  let ok = false;
+  for (const s of sigs) { if (safeEqualHex(expected, s)) ok = true; } // no early exit
+  return ok;
+}
+
+/** "1500.00" -> 150000 (kobo) without floats; null if not a plain decimal. */
+function decimalToMinor(v) {
+  const m = /^(\d{1,12})(?:\.(\d{1,8}))?$/.exec(String(v === undefined || v === null ? '' : v).trim());
+  if (!m) return null;
+  const frac = (m[2] || '').padEnd(2, '0');
+  if (/[1-9]/.test(frac.slice(2))) return null; // finer than 2 decimals: refuse to guess
+  return parseInt(m[1], 10) * 100 + parseInt(frac.slice(0, 2), 10);
 }
 
 // ------------------------------------------------------------------ the layer
@@ -322,6 +383,7 @@ function createSaas(deps = {}) {
     const pay = ref && await db.paymentByRef(ref);
     if (!pay) { d.log(`${src}: unknown reference ${ref}`); if (userIdMustMatch) throw new HttpError(404, 'not_found', 'Payment not found.'); return { success: true, ignored: 'unknown_reference' }; }
     if (userIdMustMatch && pay.user_id !== userIdMustMatch) throw new HttpError(404, 'not_found', 'Payment not found.');
+    if (String(pay.reference).startsWith('las_bachs_')) { d.log(`${src}: bachs reference ignored on the Paystack path`); return { success: true, ignored: 'wrong_provider' }; }
     if (pay.status === 'success') return { success: true, duplicate: true };
     // Don't trust the client/webhook body alone: ask Paystack for the transaction.
     const vr = await d.fetch(`${cfg.paystackBase}/transaction/verify/${encodeURIComponent(ref)}`, { headers: { Authorization: `Bearer ${cfg.paystackSecret}` } });
@@ -333,9 +395,14 @@ function createSaas(deps = {}) {
       d.log(`${src}: verification failed for ${ref} (${tx && tx.status})`);
       return { success: true, ignored: 'verification_failed', status: tx && tx.status };
     }
+    return grantPlan(pay, ref, src, tx);
+  }
+
+  /** Atomically claim the payment, then extend Premium. Shared by Paystack and Bachs. */
+  async function grantPlan(pay, ref, src, raw) {
     const now = d.now();
     // Atomically claim the payment so concurrent webhook + verify grant only once.
-    if (!(await db.claimPayment(ref, { status: 'success', paid_at: new Date(now).toISOString(), raw: tx }))) return { success: true, duplicate: true };
+    if (!(await db.claimPayment(ref, { status: 'success', paid_at: new Date(now).toISOString(), raw }))) return { success: true, duplicate: true };
     const profile = await db.profile(pay.user_id);
     const base = profile && profile.plan === 'premium' && profile.plan_expires_at && Date.parse(profile.plan_expires_at) > now ? Date.parse(profile.plan_expires_at) : now;
     const days = (cfg.prices[pay.plan_interval] || cfg.prices.monthly).days;
@@ -343,6 +410,99 @@ function createSaas(deps = {}) {
     await db.setPlan(pay.user_id, 'premium', expires);
     d.log(`${src}: ${pay.user_id} premium until ${expires} (${ref})`);
     return { success: true, plan: 'premium', expiresAt: expires };
+  }
+
+
+  // ---------------------------------------------------------------- Bachs
+  const bachsReady = () => cfg.bachsEnabled && !!cfg.bachsKey;
+  const bachsHeaders = (extra) => ({ Authorization: `Bearer ${cfg.bachsKey}`, 'Content-Type': 'application/json', ...(extra || {}) });
+
+  /** Public: which payment providers the UI may offer. */
+  async function payOptions() {
+    return { success: true, paystack: !!cfg.paystackSecret, bachs: bachsReady() };
+  }
+
+  async function bachsInitialize(req) {
+    const who = await identify(req);
+    if (!who.user) throw new HttpError(401, 'login_required', 'Please log in to upgrade.');
+    if (!bachsReady()) throw new HttpError(503, 'payments_off', 'This payment option is not available yet.');
+    let body = {};
+    try { body = JSON.parse((await readBody(req)).toString() || '{}'); } catch (_) { throw new HttpError(400, 'bad_request', 'Invalid JSON'); }
+    const interval = body.plan === 'yearly' ? 'yearly' : body.plan === 'monthly' ? 'monthly' : null;
+    if (!interval) throw new HttpError(400, 'bad_request', 'plan must be "monthly" or "yearly"');
+    const price = cfg.prices[interval];
+    const reference = `las_bachs_${interval}_${crypto.randomBytes(10).toString('hex')}`;
+    const email = who.user.email || (who.profile && who.profile.email);
+    const payload = {
+      pricing: { currency: cfg.currency, amount: (price.amount / 100).toFixed(2) }, // Bachs money = decimal string in major units
+      reference,
+      metadata: { user_id: who.user.id, plan_interval: interval, reference, app: 'las-converter' },
+      success_url: cfg.bachsSuccessUrl,
+      cancel_url: cfg.bachsCancelUrl,
+      expires_in_minutes: 60,
+      ...(email ? { customer: { email } } : {}),
+    };
+    const r = await d.fetch(`${cfg.bachsBase}/v1/checkout-sessions`, { method: 'POST', headers: bachsHeaders({ 'Idempotency-Key': reference }), body: JSON.stringify(payload) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.checkout_url || !j.checkout_id) throw new HttpError(502, 'bachs_error', `Payment provider error: ${(j && j.detail) || r.status}`);
+    await db.addPayment({ reference, user_id: who.user.id, plan_interval: interval, amount: price.amount, currency: cfg.currency, status: 'pending', raw: { provider: 'bachs', checkout_id: j.checkout_id } });
+    return { success: true, reference, checkoutUrl: j.checkout_url };
+  }
+
+  /**
+   * Bachs webhook: verify the signature (raw body, 5 min tolerance), then act on the event.
+   * Premium is granted only for checkout.completed / collection.succeeded, after re-reading the checkout from Bachs
+   * and checking currency + amount; idempotent through db.claimPayment (events can arrive twice, in any order).
+   * Errors we want retried return 5xx; refusals return 400 (Bachs does not retry other 4xx).
+   */
+  async function bachsWebhook(req) {
+    const raw = await readBody(req, 1024 * 1024);
+    if (!bachsSignatureOk(cfg.bachsWebhookSecret, raw, req.headers, d.now())) throw new HttpError(400, 'bad_signature', 'Invalid signature');
+    let evt; try { evt = JSON.parse(raw.toString()); } catch (_) { throw new HttpError(400, 'bad_request', 'Invalid JSON'); }
+    return applyBachsEvent(evt);
+  }
+
+  async function applyBachsEvent(evt) {
+    const type = evt && evt.type; const data = (evt && evt.data) || {};
+    if (!['checkout.completed', 'collection.succeeded', 'collection.underpaid', 'collection.failed', 'checkout.expired'].includes(type)) return { success: true, ignored: type };
+    const ref = String(data.reference || (data.metadata && data.metadata.reference) || '');
+    const pay = /^las_bachs_[A-Za-z0-9_]{6,100}$/.test(ref) ? await db.paymentByRef(ref) : null;
+    if (!pay) { d.log(`bachs ${type}: unknown reference ${ref.slice(0, 60)}`); return { success: true, ignored: 'unknown_reference' }; }
+    const storedCheckout = pay.raw && pay.raw.checkout_id;
+    if (storedCheckout && data.checkout_id && storedCheckout !== data.checkout_id) { d.log(`bachs ${type}: checkout mismatch for ${ref}`); return { success: true, ignored: 'checkout_mismatch' }; }
+    if (data.metadata && data.metadata.user_id && data.metadata.user_id !== pay.user_id) { d.log(`bachs ${type}: user mismatch for ${ref}`); return { success: true, ignored: 'user_mismatch' }; }
+
+    if (type !== 'checkout.completed' && type !== 'collection.succeeded') {
+      // Not final / not a payment: never grant, never mark failed (a failed attempt can be retried, an expired
+      // checkout can still be paid by transfer). Just keep a note for support.
+      if (pay.status !== 'success') await db.updatePayment(ref, { raw: { ...(pay.raw || {}), last_event: type, last_event_id: evt.id, last_event_data: data } }).catch((e) => d.log(`bachs note failed: ${e.message}`));
+      d.log(`bachs ${type} for ${ref} (no action)`);
+      return { success: true, noted: type };
+    }
+    if (pay.status === 'success') return { success: true, duplicate: true };
+    if (type === 'checkout.completed' && data.payment_status !== 'paid') return { success: true, ignored: 'no_payment' };
+    if (type === 'collection.succeeded' && !['SUCCEEDED', 'OVERPAID'].includes(String(data.status || '').toUpperCase())) {
+      d.log(`bachs ${type} for ${ref}: status ${data.status} needs manual review`);
+      return { success: true, ignored: 'needs_review', status: data.status };
+    }
+    // Don't trust the webhook body alone: read the checkout from Bachs.
+    const checkoutId = data.checkout_id || storedCheckout;
+    if (!checkoutId || !cfg.bachsKey) throw new HttpError(503, 'not_ready', 'Cannot verify the checkout yet.');
+    let r; try { r = await d.fetch(`${cfg.bachsBase}/v1/checkout-sessions/${encodeURIComponent(checkoutId)}`, { headers: bachsHeaders() }); } catch (e) { throw new HttpError(503, 'not_ready', 'Bachs unreachable.'); }
+    const co = await r.json().catch(() => null);
+    if (!r.ok || !co) throw new HttpError(503, 'not_ready', `Could not verify the checkout (HTTP ${r.status}).`); // 5xx => Bachs retries
+    if (co.status !== 'completed') throw new HttpError(503, 'not_ready', 'Checkout not completed yet.');
+    if (co.reference && co.reference !== ref) { d.log(`bachs: reference mismatch on checkout ${checkoutId}`); return { success: true, ignored: 'reference_mismatch' }; }
+    // Amount: the checkout's own total (what we asked for); fall back to the signed event when the checkout omits it.
+    const amount = co.amount !== undefined && co.amount !== null ? co.amount : data.amount;
+    const currency = co.currency || data.currency;
+    const minor = decimalToMinor(amount);
+    if (minor === null || String(currency).toUpperCase() !== String(pay.currency).toUpperCase() || minor < Number(pay.amount)) {
+      d.log(`bachs: amount/currency mismatch for ${ref}: got ${amount} ${currency}, expected ${pay.amount / 100} ${pay.currency}; held for review`);
+      await db.updatePayment(ref, { raw: { ...(pay.raw || {}), held_for_review: true, got_amount: amount, got_currency: currency, event_id: evt.id } }).catch(() => {});
+      return { success: true, ignored: 'amount_mismatch' };
+    }
+    return grantPlan(pay, ref, 'bachs-webhook', { provider: 'bachs', checkout_id: checkoutId, event_id: evt.id, event_type: type, charge_id: data.charge_id || (co.charge && co.charge.id) || null, amount, currency });
   }
 
   /** Callback fallback: logged-in user confirms their own reference (?reference= / ?trxref=). */
@@ -353,7 +513,7 @@ function createSaas(deps = {}) {
     const { user } = await verifyActive(m[1].trim());
     let ref = new URL(req.url, 'http://x').searchParams.get('reference') || '';
     if (!ref) { try { ref = String(JSON.parse((await readBody(req, 16384)).toString() || '{}').reference || ''); } catch (_) {} }
-    if (!/^[A-Za-z0-9_.=-]{6,100}$/.test(ref)) throw new HttpError(400, 'bad_request', 'Missing payment reference.');
+    if (!/^[A-Za-z0-9_.=-]{6,100}$/.test(ref) || ref.startsWith('las_bachs_')) throw new HttpError(400, 'bad_request', 'Missing payment reference.');
     return applyPayment(ref, 'verify', user.id);
   }
 
@@ -540,9 +700,12 @@ function createSaas(deps = {}) {
     'POST /api/pay/initialize': payInitialize,
     'POST /api/pay/webhook': payWebhook,
     'POST /api/pay/verify': payVerify,
+    'GET /api/pay/options': payOptions,
+    'POST /api/pay/bachs/initialize': bachsInitialize,
+    'POST /api/pay/bachs/webhook': bachsWebhook,
     'POST /api/session/claim': sessionClaim,
   };
   return { enabled: true, cfg, identify, userId, checkRequest, consume, afterJob, routes, storage, HttpError };
 }
 
-module.exports = { createSaas, loadConfig, paystackSignatureOk, effectivePlan, HttpError };
+module.exports = { createSaas, loadConfig, paystackSignatureOk, bachsSignatureOk, bachsBaseUrl, decimalToMinor, effectivePlan, HttpError };
