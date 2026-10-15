@@ -52,6 +52,8 @@ function loadConfig() {
     paystackBase: env('PAYSTACK_API_BASE', 'https://api.paystack.co').replace(/\/+$/, ''),
     payCallbackUrl: env('LAS_PAY_CALLBACK_URL'),
     // Bachs (second payment option). Hidden/disabled unless BACHS_ENABLED=1 and BACHS_API_KEY is set.
+    // Paystack is only OFFERED in the UI when PAYSTACK_ENABLED=1 (initialize/webhook/verify stay live regardless, for in-flight payments).
+    paystackEnabled: ['1', 'true', 'yes', 'on'].includes(env('PAYSTACK_ENABLED').toLowerCase()),
     bachsEnabled: ['1', 'true', 'yes', 'on'].includes(env('BACHS_ENABLED').toLowerCase()),
     bachsKey: env('BACHS_API_KEY'),
     bachsWebhookSecret: env('BACHS_WEBHOOK_SECRET'),
@@ -419,7 +421,7 @@ function createSaas(deps = {}) {
 
   /** Public: which payment providers the UI may offer. */
   async function payOptions() {
-    return { success: true, paystack: !!cfg.paystackSecret, bachs: bachsReady() };
+    return { success: true, paystack: cfg.paystackEnabled && !!cfg.paystackSecret, bachs: bachsReady() };
   }
 
   async function bachsInitialize(req) {

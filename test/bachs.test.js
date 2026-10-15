@@ -91,13 +91,18 @@ test('decimalToMinor', () => {
 test('feature flag: off by default, initialize refused, /api/pay/options reflects it', async () => {
   const m = mock();
   const off = createSaas({ config: cfg({ bachsEnabled: false }), fetch: m.fetch, now: () => NOW, storage: null });
-  assert.deepStrictEqual(await off.routes['GET /api/pay/options'](), { success: true, paystack: true, bachs: false });
+  assert.deepStrictEqual(await off.routes['GET /api/pay/options'](), { success: true, paystack: false, bachs: false });
   await assert.rejects(off.routes['POST /api/pay/bachs/initialize'](bodyReq(auth, '{"plan":"monthly"}')), (e) => e.status === 503);
   assert.strictEqual(m.state.bachsCalls.length, 0);
   const noKey = createSaas({ config: cfg({ bachsKey: '' }), fetch: m.fetch, now: () => NOW, storage: null });
   assert.strictEqual((await noKey.routes['GET /api/pay/options']()).bachs, false);
   const on = createSaas({ config: cfg(), fetch: m.fetch, now: () => NOW, storage: null });
   assert.strictEqual((await on.routes['GET /api/pay/options']()).bachs, true);
+  // Paystack is only offered with PAYSTACK_ENABLED=1 (and a secret); routes themselves stay live.
+  const psOn = createSaas({ config: cfg({ paystackEnabled: true }), fetch: m.fetch, now: () => NOW, storage: null });
+  assert.strictEqual((await psOn.routes['GET /api/pay/options']()).paystack, true);
+  assert.strictEqual((await on.routes['GET /api/pay/options']()).paystack, false);
+  delete process.env.PAYSTACK_ENABLED; assert.strictEqual(loadConfig().paystackEnabled, false);
   delete process.env.BACHS_ENABLED; assert.strictEqual(loadConfig().bachsEnabled, false);
 });
 
