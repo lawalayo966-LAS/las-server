@@ -137,6 +137,8 @@ function createDb(cfg, deps) {
     async addDownload(row) { return call('POST', 'downloads', row, 'return=minimal'); },
     async history(userId, limit = 50) { return call('GET', `downloads?user_id=eq.${encodeURIComponent(userId)}&order=created_at.desc&limit=${limit}&select=id,source_url,title,format,quality,size_bytes,r2_key,expires_at,created_at`); },
     async paymentByRef(ref) { const rows = await call('GET', `payments?reference=eq.${encodeURIComponent(ref)}&select=*`); return rows && rows[0] || null; },
+    /** Profiles whose email matches case-insensitively (caller still compares exactly; ilike '_' is a wildcard). */
+    async profilesByEmail(email) { return call('GET', `profiles?email=ilike.${encodeURIComponent(String(email).replace(/[%*\\]/g, '?'))}&select=id,email,plan,plan_expires_at&limit=5`); },
     async addPayment(row) { return call('POST', 'payments', row, 'return=minimal'); },
     async claimPayment(ref, patch) { const rows = await call('PATCH', `payments?reference=eq.${encodeURIComponent(ref)}&status=neq.success`, patch, 'return=representation'); return Array.isArray(rows) && rows.length > 0; },
     async updatePayment(ref, patch) { return call('PATCH', `payments?reference=eq.${encodeURIComponent(ref)}`, patch, 'return=minimal'); },
@@ -469,6 +471,8 @@ function createSaas(deps = {}) {
     if (!['checkout.completed', 'collection.succeeded', 'collection.underpaid', 'collection.failed', 'checkout.expired'].includes(type)) return { success: true, ignored: type };
     const ref = String(data.reference || (data.metadata && data.metadata.reference) || '');
     const pay = /^las_bachs_[A-Za-z0-9_]{6,100}$/.test(ref) ? await db.paymentByRef(ref) : null;
+    // Payment-link checkouts (reusable hosted links) carry none of our references or metadata: match the buyer by email instead.
+    if (!pay && !ref.startsWith('las_bachs_') && !(data.metadata && data.metadata.user_id)) return applyBachsLinkPayment(evt, type, data);
     if (!pay) { d.log(`bachs ${type}: unknown reference ${ref.slice(0, 60)}`); return { success: true, ignored: 'unknown_reference' }; }
     const storedCheckout = pay.raw && pay.raw.checkout_id;
     if (storedCheckout && data.checkout_id && storedCheckout !== data.checkout_id) { d.log(`bachs ${type}: checkout mismatch for ${ref}`); return { success: true, ignored: 'checkout_mismatch' }; }
@@ -505,6 +509,53 @@ function createSaas(deps = {}) {
       return { success: true, ignored: 'amount_mismatch' };
     }
     return grantPlan(pay, ref, 'bachs-webhook', { provider: 'bachs', checkout_id: checkoutId, event_id: evt.id, event_type: type, charge_id: data.charge_id || (co.charge && co.charge.id) || null, amount, currency });
+  }
+
+  /**
+   * Payment-link purchase (no las_bachs_ reference, no user_id metadata). Only final success events count. We re-read the checkout from
+   * Bachs, require a fully paid NGN amount of exactly the monthly or yearly price, take the buyer's email, and grant Premium only when
+   * exactly one profile has that email (case-insensitive). Idempotent through the unique payments reference `bachs_<checkout_id>`.
+   * No match / ambiguous / odd amount: nothing is granted, it is logged for a manual grant (a Bachs event replay re-runs this later).
+   */
+  async function applyBachsLinkPayment(evt, type, data) {
+    if (type !== 'checkout.completed' && type !== 'collection.succeeded') return { success: true, ignored: 'unknown_reference' };
+    if (type === 'checkout.completed' && data.payment_status !== 'paid') return { success: true, ignored: 'no_payment' };
+    if (type === 'collection.succeeded' && !['SUCCEEDED', 'OVERPAID'].includes(String(data.status || '').toUpperCase())) return { success: true, ignored: 'needs_review', status: data.status };
+    const checkoutId = String(data.checkout_id || '');
+    if (!/^chk_[A-Za-z0-9_-]{4,100}$/.test(checkoutId)) { d.log(`bachs ${type}: no usable checkout id on a non-dynamic payment`); return { success: true, ignored: 'unknown_reference' }; }
+    const reference = `bachs_${checkoutId}`;
+    const existing = await db.paymentByRef(reference);
+    if (existing && existing.status === 'success') return { success: true, duplicate: true };
+    if (!cfg.bachsKey) throw new HttpError(503, 'not_ready', 'Cannot verify the checkout yet.');
+    let r; try { r = await d.fetch(`${cfg.bachsBase}/v1/checkout-sessions/${encodeURIComponent(checkoutId)}`, { headers: bachsHeaders() }); } catch (e) { throw new HttpError(503, 'not_ready', 'Bachs unreachable.'); }
+    const co = await r.json().catch(() => null);
+    if (!r.ok || !co) throw new HttpError(503, 'not_ready', `Could not verify the checkout (HTTP ${r.status}).`);
+    if (co.status !== 'completed') throw new HttpError(503, 'not_ready', 'Checkout not completed yet.');
+    if (co.payment_status !== undefined && co.payment_status !== null && co.payment_status !== 'paid') { d.log(`bachs link ${checkoutId}: payment_status ${co.payment_status}, not granting`); return { success: true, ignored: 'no_payment' }; }
+    const amount = co.amount !== undefined && co.amount !== null ? co.amount : data.amount;
+    const currency = String(co.currency || data.currency || '').toUpperCase();
+    const minor = decimalToMinor(amount);
+    const interval = minor === cfg.prices.monthly.amount ? 'monthly' : minor === cfg.prices.yearly.amount ? 'yearly' : null;
+    if (!interval || currency !== String(cfg.currency).toUpperCase()) {
+      d.log(`bachs link ${checkoutId}: UNMATCHED amount/currency ${amount} ${currency}; no Premium granted, manual review`);
+      return { success: true, ignored: 'amount_mismatch' };
+    }
+    const email = [co.customer_details && co.customer_details.email, co.customer && co.customer.email, data.customer_details && data.customer_details.email, data.customer && data.customer.email]
+      .find((e) => typeof e === 'string' && e.includes('@'));
+    const want = String(email || '').trim().toLowerCase();
+    const hits = want ? ((await db.profilesByEmail(want)) || []).filter((p) => String(p.email || '').trim().toLowerCase() === want) : [];
+    if (hits.length !== 1) {
+      const masked = want ? want.replace(/^(.{2}).*(@.*)$/, '$1***$2') : '(none)';
+      d.log(`bachs link ${checkoutId}: UNMATCHED (${hits.length} accounts for email ${masked}, ${amount} ${currency}); no Premium granted, manual grant needed`);
+      return { success: true, ignored: 'unmatched', matches: hits.length };
+    }
+    const user = hits[0];
+    if (!existing) {
+      try { await db.addPayment({ reference, user_id: user.id, plan_interval: interval, amount: minor, currency: cfg.currency, status: 'pending', raw: { provider: 'bachs', source: 'payment_link', checkout_id: checkoutId } }); }
+      catch (e) { if (!(await db.paymentByRef(reference))) throw e; } // lost a race with a concurrent delivery: fall through to the atomic claim
+    } else if (existing.user_id !== user.id) { d.log(`bachs link ${checkoutId}: stored user differs from email match; held for review`); return { success: true, ignored: 'user_mismatch' }; }
+    const pay = { reference, user_id: user.id, plan_interval: interval };
+    return grantPlan(pay, reference, 'bachs-link-webhook', { provider: 'bachs', source: 'payment_link', checkout_id: checkoutId, event_id: evt.id, event_type: type, charge_id: data.charge_id || (co.charge && co.charge.id) || null, amount, currency });
   }
 
   /** Callback fallback: logged-in user confirms their own reference (?reference= / ?trxref=). */

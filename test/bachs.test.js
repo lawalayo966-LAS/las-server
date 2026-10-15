@@ -30,8 +30,9 @@ function mock({ checkout, checkoutStatus = 200 } = {}) {
         return json(checkoutStatus, checkout === undefined ? { checkout_id: 'chk_abc123', status: 'completed', amount: '1500.00', currency: 'NGN', reference: ref } : checkout(ref));
       }
     }
+    if (u.pathname === '/rest/v1/profiles' && method === 'GET' && u.searchParams.get('email')) { const pat = u.searchParams.get('email').slice(6).toLowerCase(); return json(200, (state.profiles || [state.profile]).filter((p) => p.email.toLowerCase() === pat)); }
     if (u.pathname === '/rest/v1/profiles' && method === 'GET') return json(200, [state.profile]);
-    if (u.pathname === '/rest/v1/profiles' && method === 'PATCH') { Object.assign(state.profile, body); return json(204); }
+    if (u.pathname === '/rest/v1/profiles' && method === 'PATCH') { const id = u.searchParams.get('id').slice(3); Object.assign((state.profiles || [state.profile]).find((p) => p.id === id) || state.profile, body); return json(204); }
     if (u.pathname === '/rest/v1/payments' && method === 'POST') { state.payments.set(body.reference, { ...body }); return json(201); }
     if (u.pathname === '/rest/v1/payments' && method === 'GET') { const p = state.payments.get(u.searchParams.get('reference').slice(3)); return json(200, p ? [p] : []); }
     if (u.pathname === '/rest/v1/payments' && method === 'PATCH') { const p = state.payments.get(u.searchParams.get('reference').slice(3)); const st = u.searchParams.get('status'); if (!p || (st && st.startsWith('neq.') && p.status === st.slice(4))) return json(200, []); Object.assign(p, body); return json(200, [p]); }
@@ -220,4 +221,76 @@ test('webhook: unknown reference, foreign checkout id, other user id, unrelated 
 test('Paystack paths cannot be used on a Bachs reference', async () => {
   const m = mock(); const { s, init } = await started(m);
   await assert.rejects(s.routes['POST /api/pay/verify'](bodyReq(auth, JSON.stringify({ reference: init.reference }))), (e) => e.status === 400);
+});
+
+// ---- payment links (no our-reference, no user_id metadata): matched by email
+const linkEvt = (o = {}, type = 'collection.succeeded') => ({ id: 'evt_L1', type, created_at: '2026-10-15T12:00:00Z', data: type === 'checkout.completed'
+  ? { checkout_id: 'chk_link1', status: 'completed', payment_status: 'paid', amount: '1500.00', currency: 'NGN', reference: null, customer: null, customer_details: { email: 'Ayo@Example.com', name: 'A' }, metadata: {}, ...o }
+  : { charge_id: 'ch_L', checkout_id: 'chk_link1', reference: null, status: 'SUCCEEDED', amount: '1500.00', currency: 'NGN', customer: { id: null, email: 'ayo@example.com' }, metadata: {}, ...o } });
+function linkSetup(co, profiles) {
+  const m = mock({ checkout: () => ({ checkout_id: 'chk_link1', status: 'completed', payment_status: 'paid', amount: '1500.00', currency: 'NGN', reference: null, customer_details: { email: 'AYO@example.com' }, ...co }) });
+  m.state.profiles = profiles || [{ id: 'user-9', email: 'ayo@example.com', plan: 'free', plan_expires_at: null }, { id: 'user-2', email: 'other@example.com', plan: 'free', plan_expires_at: null }];
+  const logs = [];
+  const s = createSaas({ config: cfg(), fetch: m.fetch, now: () => NOW, storage: null, log: (x) => logs.push(x) });
+  return { m, s, logs };
+}
+test('link payment: monthly grants Premium to the one account with that email (case-insensitive); duplicate events are idempotent', async () => {
+  const { m, s } = linkSetup();
+  const r = await hook(s, linkEvt());
+  assert.strictEqual(r.plan, 'premium');
+  assert.strictEqual(m.state.profiles[0].plan, 'premium');
+  assert.strictEqual(m.state.profiles[1].plan, 'free');
+  assert.strictEqual(m.state.payments.get('bachs_chk_link1').status, 'success');
+  assert.strictEqual(m.state.payments.get('bachs_chk_link1').plan_interval, 'monthly');
+  const exp = m.state.profiles[0].plan_expires_at;
+  assert.ok((await hook(s, linkEvt({}, 'checkout.completed'))).duplicate);
+  assert.ok((await hook(s, linkEvt())).duplicate);
+  assert.strictEqual(m.state.profiles[0].plan_expires_at, exp, 'not extended twice');
+});
+test('link payment: yearly amount grants yearly', async () => {
+  const { m, s } = linkSetup({ amount: '12000.00' });
+  assert.strictEqual((await hook(s, linkEvt({ amount: '12000.00' }))).plan, 'premium');
+  assert.strictEqual(m.state.payments.get('bachs_chk_link1').plan_interval, 'yearly');
+  assert.strictEqual(m.state.profiles[0].plan_expires_at, new Date(NOW + 365 * 86400e3).toISOString());
+});
+test('link payment: unknown email is not granted and is logged as unmatched', async () => {
+  const { m, s, logs } = linkSetup({ customer_details: { email: 'nobody@example.com' } });
+  const r = await hook(s, linkEvt({ customer: { email: 'nobody@example.com' } }));
+  assert.strictEqual(r.ignored, 'unmatched');
+  assert.ok(m.state.profiles.every((p) => p.plan === 'free'));
+  assert.strictEqual(m.state.payments.size, 0);
+  assert.ok(logs.some((l) => /UNMATCHED/.test(l)));
+});
+test('link payment: two accounts with the same email is ambiguous: not granted', async () => {
+  const { m, s } = linkSetup({}, [{ id: 'u1', email: 'ayo@example.com', plan: 'free' }, { id: 'u2', email: 'AYO@example.com', plan: 'free' }]);
+  assert.strictEqual((await hook(s, linkEvt())).ignored, 'unmatched');
+  assert.ok(m.state.profiles.every((p) => p.plan === 'free'));
+});
+test('link payment: wrong amount, wrong currency, unpaid or not-completed are not granted', async () => {
+  for (const co of [{ amount: '1000.00' }, { amount: '13500.00' }, { currency: 'USD' }, { payment_status: 'unpaid' }]) {
+    const { m, s } = linkSetup(co);
+    const r = await hook(s, linkEvt());
+    assert.ok(r.ignored, JSON.stringify(co));
+    assert.strictEqual(m.state.profiles[0].plan, 'free');
+  }
+  const { s } = linkSetup({ status: 'open' });
+  await assert.rejects(() => hook(s, linkEvt()), (e) => e.status === 503);
+});
+test('link payment: failed/underpaid events and unpaid completions never grant', async () => {
+  const { m, s } = linkSetup();
+  assert.ok((await hook(s, linkEvt({ payment_status: 'no_payment_required' }, 'checkout.completed'))).ignored);
+  assert.ok((await hook(s, { ...linkEvt(), type: 'collection.failed' })).ignored);
+  assert.ok((await hook(s, linkEvt({ status: 'ACCEPTED' }))).ignored);
+  assert.strictEqual(m.state.profiles[0].plan, 'free');
+});
+test('link payment: events with a user_id in metadata or a las_bachs_ reference do not take the email path', async () => {
+  const { m, s } = linkSetup();
+  assert.strictEqual((await hook(s, linkEvt({ metadata: { user_id: 'x' } }))).ignored, 'unknown_reference');
+  assert.strictEqual((await hook(s, linkEvt({ reference: 'las_bachs_monthly_deadbeef01' }))).ignored, 'unknown_reference');
+  assert.strictEqual(m.state.profiles[0].plan, 'free');
+});
+test('link payment: unsigned webhook still rejected', async () => {
+  const { s } = linkSetup();
+  const b = JSON.stringify(linkEvt());
+  await assert.rejects(() => s.routes['POST /api/pay/bachs/webhook'](bodyReq({}, b)), (e) => e.status === 400);
 });
