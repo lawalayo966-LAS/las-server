@@ -339,6 +339,9 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
   const attempts = [
     { name: `default${userCookies.length ? ' + saved cookies' : ''}`, extra: userCookies },
     { name: 'alt player clients', extra: [...userCookies, '--extractor-args', 'youtube:player_client=default,tv_simply,android_vr,mweb', '--remote-components', 'ejs:github'], update: true },
+    // YouTube 429s the watch-page request from datacenter IPs; these clients can
+    // work without the webpage (no PO token needed for android_vr / tv_simply).
+    { name: 'no-webpage clients', extra: [...userCookies, '--extractor-args', 'youtube:player_client=android_vr,tv_simply;player_skip=webpage,configs', '--remote-components', 'ejs:github'], youtubeOnly: true },
   ];
   if (st.mode === 'auto' && !srv && !process.env.LAS_NO_BROWSER_COOKIES) {
     for (const b of COOKIE_BROWSERS.filter((x) => x !== 'avast' || IS_WIN)) attempts.push({ name: `cookies from ${b}`, extra: ['--cookies-from-browser', browserSpec(b)], browser: b });
@@ -346,6 +349,7 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
   let last = null;
   const failures = [];
   for (const att of attempts) {
+    if (att.youtubeOnly && !/youtu\.?be/i.test(String(args[args.length - 1]))) continue;
     if (att.update) { try { const { cmd } = await resolveYtDlp(); await ensureLatest(cmd, true); } catch (_) {} }
     log(`attempt: ${att.name}`);
     const r = await runYtDlp([...base, ...att.extra, ...args], timeoutMs, onLine, signal);
@@ -371,6 +375,9 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
   const target = args[args.length - 1];
   const fb = friendlyFacebookError(String(target), `${reason}\n${failures.join('\n')}`);
   if (fb) throw new YtDlpError(fb, 'fb_unavailable');
+  if (/youtu\.?be/i.test(String(target)) && /HTTP Error 429|Too Many Requests|not a bot|Sign in to confirm/i.test(failures.join('\n'))) {
+    throw new YtDlpError('YouTube is temporarily blocking this server\'s network (rate limit / bot check on shared datacenter IPs). This is not a problem with your link. Please try again in a few minutes; other sites (Facebook, TikTok, etc.) are unaffected.', 'youtube_blocked');
+  }
   if (isBotError(failures.join('\n'))) {
     throw new YtDlpError(`The site needs you to be signed in or confirm you're not a bot (${reason}). Add cookies (from your browser or a cookies.txt) in Settings and try again.`, 'bot_check');
   }
