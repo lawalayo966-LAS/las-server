@@ -19,6 +19,8 @@ const https = require('https');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { FFMPEG_PATH } = require('./binaries');
+const { assertPublicHttpUrl } = require('./security');
+const { safeLookup } = require('./egress-guard');
 
 const IS_WIN = process.platform === 'win32';
 const EXE_NAME = IS_WIN ? 'yt-dlp.exe' : 'yt-dlp';
@@ -278,6 +280,10 @@ class YtDlpError extends Error {
   constructor(message, code) { super(message); this.code = code; }
 }
 
+// Local SSRF egress guard URL (hosted server only; set by public-server.js).
+let egressProxy = '';
+function setEgressProxy(url) { egressProxy = url || ''; }
+
 /** Options shared by every run: JS runtime, retries, gentle request pacing. */
 function commonArgs() {
   const args = [];
@@ -289,7 +295,10 @@ function commonArgs() {
   // single long requests) and parallel DASH fragments.
   // Hosted mode: route yt-dlp through a (residential) proxy, e.g. to get past
   // YouTube's datacenter bot check: LAS_PROXY=http://user:pass@host:port or socks5://...
+  // Otherwise (hosted server) every yt-dlp connection goes through the local
+  // SSRF egress guard (server/egress-guard.js), which refuses internal addresses.
   if (process.env.LAS_PROXY) args.push('--proxy', process.env.LAS_PROXY);
+  else if (egressProxy) args.push('--proxy', egressProxy);
   args.push('--socket-timeout', '30', '--retries', '20', '--fragment-retries', '20', '--file-access-retries', '10',
     '--extractor-retries', '3', '--retry-sleep', 'http:exp=1:20', '--retry-sleep', 'fragment:exp=1:20', '--retry-sleep', 'extractor:exp=1:10',
     '--continue', '--http-chunk-size', '5M', '--concurrent-fragments', '4', '--sleep-requests', '0.5');
@@ -427,10 +436,11 @@ const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const FB_CRAWLER_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 function redirectOf(url, ua) {
   return new Promise((resolve) => {
-    const req = https.request(url, { method: 'GET', headers: { 'User-Agent': ua, Accept: 'text/html' }, timeout: 15000 }, (res) => {
+    let req;
+    try { req = https.request(url, { method: 'GET', headers: { 'User-Agent': ua, Accept: 'text/html' }, timeout: 15000, lookup: safeLookup }, (res) => {
       res.resume();
       resolve([301, 302, 303, 307, 308].includes(res.statusCode) ? res.headers.location : null);
-    });
+    }); } catch (_) { return resolve(null); }
     req.on('error', () => resolve(null));
     req.on('timeout', () => { req.destroy(); resolve(null); });
     req.end();
@@ -453,6 +463,8 @@ async function resolveShareUrl(url) {
     if (!loc) break;
     const next = new URL(loc, cur).toString();
     if (!/^https:/i.test(next) || /\/login|checkpoint/i.test(next)) break; // keep original if it bounces to login
+    // SSRF: never hand yt-dlp a redirect target that points inside the network.
+    try { await assertPublicHttpUrl(next); } catch (e) { log(`share link redirect refused: ${next} (${e.message})`); break; }
     cur = next;
   }
   if (cur !== url) log(`resolved share link ${url} -> ${cur}`);
@@ -466,7 +478,7 @@ async function resolveShareUrl(url) {
 const FB_POST = /^https:\/\/(?:www\.|m\.|web\.|mbasic\.)?facebook\.com\/(?:[^/?#]+\/posts\/|permalink\.php|story\.php|groups\/[^/?#]+\/(?:posts|permalink)\/)/i;
 function httpsGetText(url, maxBytes = 1.5e6) {
   return new Promise((resolve) => {
-    const req = https.request(url, { method: 'GET', headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html', 'Accept-Language': 'en-US,en;q=0.8' }, timeout: 15000 }, (res) => {
+    const req = https.request(url, { method: 'GET', headers: { 'User-Agent': BROWSER_UA, Accept: 'text/html', 'Accept-Language': 'en-US,en;q=0.8' }, timeout: 15000, lookup: safeLookup }, (res) => {
       if (res.statusCode !== 200) { res.resume(); return resolve(''); }
       let body = ''; res.setEncoding('utf8');
       res.on('data', (c) => { body += c; if (body.length > maxBytes) { req.destroy(); resolve(body); } });
@@ -653,4 +665,4 @@ async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192
   return { file, dir, ext: path.extname(file).slice(1), title: path.basename(file, path.extname(file)) };
 }
 
-module.exports = { pluginDirs, isYouTubeUrl, resolveFacebookPost, friendlyFacebookError, formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };
+module.exports = { setEgressProxy, pluginDirs, isYouTubeUrl, resolveFacebookPost, friendlyFacebookError, formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };

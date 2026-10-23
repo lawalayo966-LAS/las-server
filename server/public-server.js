@@ -14,13 +14,18 @@
 //   LAS_MAX_MEDIA_DOWNLOADS  concurrent downloads (default 2)
 //   LAS_MAX_DURATION_SEC     reject longer videos (default 1800 = 30 min)
 //   LAS_MAX_FILESIZE         yt-dlp --max-filesize (default 300M)
-//   LAS_TRUST_PROXY          "1" to take the client IP from X-Forwarded-For (PaaS load balancers)
+//   LAS_TRUST_PROXY          "1" behind Render/Cloudflare: client IP = CF-Connecting-IP (set by Cloudflare,
+//                            not client-controllable); fallback = X-Forwarded-For entry LAS_PROXY_HOPS from the
+//                            right (default 3: client, Cloudflare edge, Render proxy). Never the left-most entry.
+//   LAS_CORS_ORIGINS         comma list of allowed browser origins (wildcards ok); default = LAS sites + app WebViews
+//   LAS_HSTS                 Strict-Transport-Security value (default "max-age=604800"; "off" disables)
 //   SERVER_COOKIES / LAS_SERVER_COOKIES_FILE  cookies.txt for YouTube bot checks
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const net = require('net');
 
 process.env.LAS_MAX_DURATION_SEC = process.env.LAS_MAX_DURATION_SEC || '1800';
 process.env.LAS_MAX_FILESIZE = process.env.LAS_MAX_FILESIZE || '300M';
@@ -28,6 +33,7 @@ process.env.LAS_NO_BROWSER_COOKIES = '1';
 
 const ytdlp = require('./ytdlp');
 const { assertPublicHttpUrl, safeDownloadName } = require('./security');
+const { startEgressGuard } = require('./egress-guard');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.LAS_HOST || '0.0.0.0';
@@ -61,6 +67,7 @@ function serveStatic(req, res, pathname) {
   fs.createReadStream(file).pipe(res);
   return true;
 }
+const HSTS = (process.env.LAS_HSTS || 'max-age=604800').toLowerCase() === 'off' ? '' : (process.env.LAS_HSTS || 'max-age=604800');
 const RATE = parseInt(process.env.LAS_RATE_PER_HOUR || '30', 10);
 const MAX_CONC = parseInt(process.env.LAS_MAX_MEDIA_DOWNLOADS || '2', 10);
 
@@ -69,7 +76,13 @@ ytdlp.setLogger(log);
 
 // SaaS layer (Supabase auth / plans / R2 / Paystack); disabled unless SUPABASE_URL is set.
 const saas = require('./saas').createSaas({ log });
-const CORS_ORIGINS = (process.env.LAS_CORS_ORIGINS || '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+// Default: the LAS websites, this server, the Capacitor WebViews (Android https://localhost,
+// older Android http://localhost, iOS capacitor://localhost) and the desktop app's local
+// server (http://127.0.0.1:<port>). "null" = file:// pages (desktop fallback); no
+// credentials are ever allowed, so it grants nothing beyond what curl already has.
+const DEFAULT_CORS = 'https://lasgconcept.com,https://*.lasgconcept.com,https://las-server.onrender.com,https://*.lawalayo966.workers.dev,'
+  + 'https://localhost,http://localhost,capacitor://localhost,ionic://localhost,http://localhost:*,http://127.0.0.1:*,null';
+const CORS_ORIGINS = (process.env.LAS_CORS_ORIGINS || DEFAULT_CORS).split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
 // "https://lasconverter.com" or a wildcard like "https://*.vercel.app" (one subdomain level).
 function corsMatch(pattern, origin) {
   if (!origin) return false;
@@ -90,30 +103,31 @@ function send(res, status, obj, extra = {}) {
   res.end(body);
 }
 
-// The website served by this server (LAS_WEB_DIR) calls the API from the same
-// origin without the app token; rate limits still apply. Browsers set
-// Sec-Fetch-Site themselves and pages can't fake it.
-function sameOriginWeb(req) {
-  if (!WEB_DIR) return false;
-  if (req.headers['sec-fetch-site'] === 'same-origin') return true;
-  const origin = req.headers.origin;
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  try { return !!origin && !!host && new URL(origin).host === host; } catch (_) { return false; }
-}
-
+// Security: Origin, Host, X-Forwarded-Host and Sec-Fetch-Site are NOT accepted
+// as a substitute for the token. Browsers can't fake them, but any non-browser
+// client (curl, scripts) can, so they authenticated nobody. Callers must send
+// a valid X-LAS-Token (apps / logged-out legacy) or a Supabase JWT (verified
+// in saas.identify / saas.userId; the website always sends one).
 function tokenOk(req, urlObj) {
   if (!TOKENS.length) return true; // dev only; startup warns
-  if (sameOriginWeb(req)) return true;
   const t = req.headers['x-las-token'] || urlObj.searchParams.get('token') || '';
   const tb = Buffer.from(String(t));
   return TOKENS.some((k) => { const kb = Buffer.from(k); return kb.length === tb.length && crypto.timingSafeEqual(kb, tb); });
 }
 
+const PROXY_HOPS = Math.max(1, parseInt(process.env.LAS_PROXY_HOPS || '3', 10) || 3);
 function clientIp(req) {
-  if (process.env.LAS_TRUST_PROXY === '1' && req.headers['x-forwarded-for']) {
-    return String(req.headers['x-forwarded-for']).split(',')[0].trim();
-  }
-  return req.socket.remoteAddress || 'unknown';
+  const sock = req.socket.remoteAddress || 'unknown';
+  if (process.env.LAS_TRUST_PROXY !== '1') return sock;
+  // Cloudflare (in front of every Render service) sets CF-Connecting-IP itself and
+  // refuses client-supplied values, so it can't be spoofed.
+  const cf = String(req.headers['cf-connecting-ip'] || '').trim();
+  if (net.isIP(cf)) return cf;
+  // X-Forwarded-For is appended to, never replaced: the left-most entries are
+  // whatever the client sent. Count trusted proxies from the right instead.
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const pick = xff[xff.length - PROXY_HOPS];
+  return pick && net.isIP(pick) ? pick : sock;
 }
 
 // Sliding-window rate limit per IP.
@@ -141,10 +155,14 @@ function sweepTemp(maxAgeMs = 3600e3) {
 let active = 0;
 async function handle(req, res) {
   const urlObj = new URL(req.url, 'http://x');
-  // CORS: '*' unless LAS_CORS_ORIGINS lists the allowed sites (e.g. the Vercel frontend).
+  // Transport/security headers on every response (merged into writeHead's).
+  if (HSTS) res.setHeader('Strict-Transport-Security', HSTS);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  // CORS: only the allowed origins (LAS_CORS_ORIGINS="*" restores the old behaviour).
   const origin = String(req.headers.origin || '').replace(/\/+$/, '');
-  if (!CORS_ORIGINS.length) res.setHeader('Access-Control-Allow-Origin', '*');
-  else if (CORS_ORIGINS.some((o) => corsMatch(o, origin))) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin'); }
+  res.setHeader('Vary', 'Origin');
+  if (CORS_ORIGINS.includes('*')) res.setHeader('Access-Control-Allow-Origin', '*');
+  else if (CORS_ORIGINS.some((o) => corsMatch(o, origin))) res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Headers', 'X-LAS-Token, Authorization, Content-Type, Range');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, Content-Range, Accept-Ranges');
@@ -176,15 +194,16 @@ async function handle(req, res) {
     && !(req.method === 'POST' && urlObj.pathname === '/api/jobs')) return send(res, 404, { error: 'Not found' });
   if (!tokenOk(req, urlObj) && !hasBearer(req)) return send(res, 401, { success: false, error: 'Invalid or missing app token.' });
 
+  // Verify the JWT (if any) before doing any work: a junk "Bearer x" gets 401 here.
+  let who = null;
+  if (saas.enabled) { try { who = await saas.identify(req); } catch (e) { return sendErr(res, e); } }
+
   const ip = clientIp(req);
   const wait = rateLimited(ip);
   if (wait) return send(res, 429, { success: false, code: 'rate_limited', error: `Too many requests. Try again in ${Math.ceil(wait / 60)} min.` }, { 'Retry-After': String(wait) });
 
   const target = (urlObj.searchParams.get('url') || '').trim();
   try { await assertPublicHttpUrl(target); } catch (e) { return send(res, 400, { success: false, error: e.message || 'Invalid URL' }); }
-
-  let who = null;
-  if (saas.enabled) { try { who = await saas.identify(req); } catch (e) { return sendErr(res, e); } }
 
   if (urlObj.pathname === '/api/media-info') {
     log(`info ip=${ip} url=${target}${who && who.user ? ` user=${who.user.id} plan=${who.plan.key}` : ''}`);
@@ -360,7 +379,13 @@ function sweepJobs() {
   }
 }
 
-function start() {
+async function start() {
+  // SSRF egress guard for yt-dlp (not needed when LAS_PROXY sends traffic out via an external proxy).
+  if (!process.env.LAS_PROXY && process.env.LAS_EGRESS_GUARD !== 'off') {
+    const guard = await startEgressGuard({ log });
+    ytdlp.setEgressProxy(guard.url);
+    log(`egress guard on ${guard.url}`);
+  }
   const server = http.createServer((req, res) => handle(req, res).catch((e) => {
     log(`unexpected: ${e.stack}`);
     if (!res.headersSent) send(res, 500, { error: 'Internal error' }); else res.destroy();
