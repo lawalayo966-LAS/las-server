@@ -7,9 +7,10 @@ ENV NODE_ENV=production \
     PORT=8080 \
     LAS_HOST=0.0.0.0 \
     LAS_TRUST_PROXY=1 \
-    LAS_YTDLP_DIR=/home/node/.las-convert
+    LAS_YTDLP_DIR=/home/node/.las-convert \
+    LAS_YTDLP_CHANNEL=nightly
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,6 +22,13 @@ COPY server ./server
 # LAS CONVERT website (static web build) served at / with the API on the same origin.
 COPY web ./web
 COPY build-scripts/fetch-ytdlp.js ./build-scripts/fetch-ytdlp.js
+# YouTube PO tokens (datacenter IPs): bgutil provider, Rust build (one static
+# binary, run on demand by the yt-dlp plugin; no extra server process / RAM).
+# https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs
+ARG BGUTIL_RS_VERSION=v0.8.1
+ADD https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/${BGUTIL_RS_VERSION}/bgutil-pot-linux-x86_64 /usr/local/bin/bgutil-pot
+ADD https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/${BGUTIL_RS_VERSION}/bgutil-ytdlp-pot-provider-rs.zip /app/resources/yt-dlp-plugins/bgutil-ytdlp-pot-provider-rs.zip
+RUN chmod 755 /usr/local/bin/bgutil-pot && chmod 644 /app/resources/yt-dlp-plugins/*.zip && /usr/local/bin/bgutil-pot --version
 # Standalone yt-dlp + deno into resources/bin (copied to LAS_YTDLP_DIR and kept up to date at runtime).
 RUN node build-scripts/fetch-ytdlp.js --platform linux \
     && mkdir -p "$LAS_YTDLP_DIR" && chown -R node:node /app/resources "$LAS_YTDLP_DIR"

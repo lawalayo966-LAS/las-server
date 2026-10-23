@@ -15,12 +15,14 @@ const outName = platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
 const outDir = path.join(__dirname, '..', 'resources', 'bin');
 fs.mkdirSync(outDir, { recursive: true });
 const dest = path.join(outDir, outName);
+// LAS_YTDLP_CHANNEL=nightly bundles yt-dlp's nightly build instead of the stable release.
+const repo = process.env.LAS_YTDLP_CHANNEL === 'nightly' ? 'yt-dlp/yt-dlp-nightly-builds' : 'yt-dlp/yt-dlp';
 
 let attempt = 0;
 function retry(why) {
   if (++attempt > 6) { console.error(why + ' (giving up)'); process.exit(1); }
   console.error(why + ` - retry ${attempt}/6`);
-  setTimeout(() => get(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`), 3000 * attempt);
+  setTimeout(() => get(`https://github.com/${repo}/releases/latest/download/${asset}`), 3000 * attempt);
 }
 function get(url, n = 6) {
   https.get(url, { headers: { 'User-Agent': 'LAS-CONVERT-build' } }, (res) => {
@@ -34,7 +36,7 @@ function get(url, n = 6) {
     out.on('finish', () => out.close(() => console.log(`yt-dlp (${asset}) -> ${dest} (${fs.statSync(dest).size} bytes)`)));
   }).on('error', (e) => retry(e.message));
 }
-get(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`);
+get(`https://github.com/${repo}/releases/latest/download/${asset}`);
 
 // deno: JS runtime yt-dlp needs to solve YouTube's JS challenges (EJS).
 const denoAsset = platform === 'win32' ? 'deno-x86_64-pc-windows-msvc.zip'

@@ -24,7 +24,10 @@ const IS_WIN = process.platform === 'win32';
 const EXE_NAME = IS_WIN ? 'yt-dlp.exe' : 'yt-dlp';
 const RELEASE_ASSET = IS_WIN ? 'yt-dlp.exe' : process.platform === 'darwin' ? 'yt-dlp_macos'
   : process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux';
-const RELEASE_URL = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${RELEASE_ASSET}`;
+// LAS_YTDLP_CHANNEL=nightly follows yt-dlp's nightly builds (YouTube fixes land
+// there days before a stable release). Default: stable.
+const RELEASE_REPO = process.env.LAS_YTDLP_CHANNEL === 'nightly' ? 'yt-dlp/yt-dlp-nightly-builds' : 'yt-dlp/yt-dlp';
+const RELEASE_URL = `https://github.com/${RELEASE_REPO}/releases/latest/download/${RELEASE_ASSET}`;
 const UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function cacheDir() {
@@ -81,9 +84,9 @@ function headLocation(url) {
   });
 }
 
-/** Latest yt-dlp release tag, e.g. "2026.10.07" (null when offline). */
+/** Latest yt-dlp release tag, e.g. "2026.10.07" (nightly: "2026.10.21.233146"; null when offline). */
 async function latestVersion() {
-  const loc = await headLocation('https://github.com/yt-dlp/yt-dlp/releases/latest');
+  const loc = await headLocation(`https://github.com/${RELEASE_REPO}/releases/latest`);
   const m = loc && /\/tag\/([^/?#]+)/.exec(loc);
   return m ? m[1] : null;
 }
@@ -200,6 +203,18 @@ function denoPath() {
   return onPath('deno');
 }
 
+/**
+ * yt-dlp plugin folders (hosted image: the bgutil PO-token provider plugin,
+ * which calls the `bgutil-pot` executable on PATH). LAS_YTDLP_PLUGIN_DIRS
+ * (path-delimited) or <app>/resources/yt-dlp-plugins when it exists.
+ */
+function pluginDirs() {
+  const env = (process.env.LAS_YTDLP_PLUGIN_DIRS || '').split(path.delimiter).filter(Boolean);
+  const dirs = env.length ? env : [path.join(__dirname, '..', 'resources', 'yt-dlp-plugins')];
+  return dirs.filter((d) => { try { return fs.statSync(d).isDirectory(); } catch (_) { return false; } });
+}
+const isYouTubeUrl = (u) => /^https?:\/\/(?:[\w-]+\.)?(?:youtube\.com|youtu\.be|youtube-nocookie\.com)(?:[/:?#]|$)/i.test(String(u || ''));
+
 // --------------------------------------------------------------- settings
 
 const COOKIE_BROWSERS = ['chrome', 'edge', 'brave', 'firefox', 'avast'];
@@ -268,6 +283,7 @@ function commonArgs() {
   const args = [];
   const deno = denoPath();
   if (deno) args.push('--js-runtimes', `deno:${deno}`);
+  for (const d of pluginDirs()) args.push('--plugin-dirs', d);
   // Network robustness for slow / flaky connections: short socket timeout
   // with many retries, resume .part files, chunked HTTP (avoids throttled
   // single long requests) and parallel DASH fragments.
@@ -336,8 +352,16 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
   const userCookies = srv ? ['--cookies', srv]
     : st.mode === 'file' && fs.existsSync(cookiesFile()) ? ['--cookies', cookiesFile()]
     : st.mode === 'browser' ? ['--cookies-from-browser', browserSpec(st.browser)] : [];
+  const target0 = String(args[args.length - 1]);
+  const yt = isYouTubeUrl(target0);
+  // YouTube from a datacenter IP: the web/tv/android clients get "Sign in to
+  // confirm you're not a bot", but mweb (with a GVS PO token from the bgutil
+  // provider plugin) and web_embedded still work, so try those first.
+  const ytClients = process.env.LAS_YT_CLIENTS || 'mweb,web_embedded,web_safari';
   const attempts = [
-    { name: `default${userCookies.length ? ' + saved cookies' : ''}`, extra: userCookies },
+    ...(yt ? [{ name: `youtube clients ${ytClients}`, extra: [...userCookies, '--extractor-args', `youtube:player_client=${ytClients}`, '--remote-components', 'ejs:github'] }] : []),
+    // (For YouTube the alt-clients attempt below already includes the default clients.)
+    ...(yt ? [] : [{ name: `default${userCookies.length ? ' + saved cookies' : ''}`, extra: userCookies }]),
     { name: 'alt player clients', extra: [...userCookies, '--extractor-args', 'youtube:player_client=default,tv_simply,android_vr,mweb', '--remote-components', 'ejs:github'], update: true },
     // YouTube 429s the watch-page request from datacenter IPs; these clients can
     // work without the webpage (no PO token needed for android_vr / tv_simply).
@@ -349,7 +373,7 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
   let last = null;
   const failures = [];
   for (const att of attempts) {
-    if (att.youtubeOnly && !/youtu\.?be/i.test(String(args[args.length - 1]))) continue;
+    if (att.youtubeOnly && !yt) continue;
     if (att.update) { try { const { cmd } = await resolveYtDlp(); await ensureLatest(cmd, true); } catch (_) {} }
     log(`attempt: ${att.name}`);
     const r = await runYtDlp([...base, ...att.extra, ...args], timeoutMs, onLine, signal);
@@ -368,7 +392,8 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
     const cookieFail = att.browser && /cookie|database|decrypt|DPAPI|Permission|locked|could not find|failed to/i.test(r.err);
     // A 403 on the media stream usually means this player client's URLs were
     // rejected (PO token / SABR); the alternative clients typically work.
-    const streamBlocked = att === attempts[0] && /HTTP Error 403|po_token|SABR|Requested format is not available/i.test(r.err);
+    const streamBlocked = (att === attempts[0] && /HTTP Error 403|po_token|SABR|Requested format is not available/i.test(r.err))
+      || (yt && /HTTP Error 403|po_token|PO Token|SABR|Requested format is not available|No video formats found|page needs to be reloaded/i.test(r.err));
     if (!isBotError(r.err) && !cookieFail && !streamBlocked) break;
   }
   const reason = lastErrorLine(last.err, last.code);
@@ -376,7 +401,7 @@ async function runWithFallbacks(args, timeoutMs, onLine, signal, kind = 'video',
   const fb = friendlyFacebookError(String(target), `${reason}\n${failures.join('\n')}`);
   if (fb) throw new YtDlpError(fb, 'fb_unavailable');
   if (/youtu\.?be/i.test(String(target)) && /HTTP Error 429|Too Many Requests|not a bot|Sign in to confirm/i.test(failures.join('\n'))) {
-    throw new YtDlpError('YouTube is temporarily blocking this server\'s network (rate limit / bot check on shared datacenter IPs). This is not a problem with your link. Please try again in a few minutes; other sites (Facebook, TikTok, etc.) are unaffected.', 'youtube_blocked');
+    throw new YtDlpError('YouTube is busy blocking our download server right now. Your link is fine: please try again in a few minutes, or use the free LAS Converter PC app, which downloads YouTube over your own connection. Other sites (Facebook, TikTok, etc.) still work.', 'youtube_blocked');
   }
   if (isBotError(failures.join('\n'))) {
     throw new YtDlpError(`The site needs you to be signed in or confirm you're not a bot (${reason}). Add cookies (from your browser or a cookies.txt) in Settings and try again.`, 'bot_check');
@@ -628,4 +653,4 @@ async function downloadMedia(url, { kind = 'video', quality = 720, bitrate = 192
   return { file, dir, ext: path.extname(file).slice(1), title: path.basename(file, path.extname(file)) };
 }
 
-module.exports = { resolveFacebookPost, friendlyFacebookError, formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };
+module.exports = { pluginDirs, isYouTubeUrl, resolveFacebookPost, friendlyFacebookError, formatArgs, isNetworkError, workDir, resolveShareUrl, denoPath, getSettings, saveSettings, importCookiesFile, cookiesFile, isBotError, YtDlpError, COOKIE_BROWSERS, ensureLatest, latestVersion, resolveYtDlp, runYtDlp, downloadMedia, getInfo, setLogger, lastErrorLine, RELEASE_ASSET, cachedBinary, bundledBinary };
