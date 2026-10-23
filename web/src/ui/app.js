@@ -1038,9 +1038,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const isDesktopApp = !!(window.electronAPI && window.electronAPI.mediaDownload);
       { const cc = document.getElementById('yt-cookies-card'); if (cc && !isDesktopApp) cc.style.display = 'none'; }
       const showBotHelp = (on) => { if (botHelp) botHelp.style.display = on && isDesktopApp ? 'block' : 'none'; };
-      // YouTube is PC-app only: the hosted server is blocked by YouTube's bot check.
+      // YouTube works on the website too; if YouTube blocks the hosted server for a while it answers code 'youtube_blocked'.
       const PC_APP_URL = 'https://github.com/lawalayo966-LAS/las-server/releases/latest/download/LAS-Converter.exe';
-      const isYouTube = (u) => { try { return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i.test(new URL(u).hostname); } catch (_) { return false; } };
+      const ytBlockedHtml = () => `<i class="fa-brands fa-youtube"></i> YouTube is busy blocking our download server right now. Your link is fine: please try again in a few minutes, or use the free <a href="${PC_APP_URL}" rel="noopener" style="color:inherit;font-weight:700;text-decoration:underline">LAS Converter PC app</a> (Windows), which downloads YouTube over your own connection.`;
       const api = window.electronAPI;
       const retryLast = () => { showBotHelp(false); if (lastAction) lastAction(); };
       const bindOnce = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
@@ -1083,13 +1083,6 @@ document.addEventListener('DOMContentLoaded', () => {
           url = window.validateMediaUrl ? window.validateMediaUrl(urlInput.value) : new URL(urlInput.value.trim()).href;
         } catch (e) {
           return this.showToast(e.message || 'Please enter a media stream URL', 'warning');
-        }
-        if (!isDesktopApp && isYouTube(url)) {
-          if (streamsCard) streamsCard.style.display = 'none';
-          analyzedUrl = null;
-          setStatus(`<i class="fa-brands fa-youtube"></i> YouTube downloads work in the LAS Converter PC app. <a href="${PC_APP_URL}" rel="noopener" style="color:inherit;font-weight:700;text-decoration:underline">Download it here</a> (Windows).`, 'orange');
-          log('youtube link: PC app only');
-          return;
         }
         analyzeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Analyzing...';
         analyzeBtn.disabled = true;
@@ -1137,6 +1130,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
           log(`analyze failed: ${e.message}`);
           streamsCard.style.display = 'none';
+          if (e && e.code === 'youtube_blocked') { setStatus(ytBlockedHtml(), 'orange'); this.showToast('YouTube is busy right now. Please try again in a few minutes.', 'warning'); return; }
           setStatus(`Analyze failed: ${esc(e.message)}`, 'red');
           if (e && e.code === 'bot_check') showBotHelp(true);
           this.showToast(`Analyze failed: ${e.message}`, 'error');
@@ -1222,6 +1216,7 @@ document.addEventListener('DOMContentLoaded', () => {
           console.error('Download failed:', err);
           log(`download failed (${fmt}) ${url}: ${err.message}`);
           btn.innerHTML = '<i class="fa-solid fa-arrow-rotate-right"></i> Retry';
+          if (err && err.code === 'youtube_blocked') { setStatus(ytBlockedHtml(), 'orange'); this.showToast('YouTube is busy right now. Please try again in a few minutes.', 'warning'); return; }
           setStatus(`Download failed: ${esc(err.message)}`, 'red');
           if (err && err.code === 'bot_check') showBotHelp(true);
           this.showToast(`Download failed: ${err.message}`, 'error');
